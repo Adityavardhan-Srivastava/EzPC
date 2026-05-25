@@ -213,10 +213,10 @@ public:
         // printf("%d, %d\n", bw, N);
         size_t memSz = 0, numInts = 0;
         auto d_compressedA0 = compressMem(bw, bw, N, d_A0, memSz, numInts, s, false, OpType);
-        moveIntoCPUMem(h_bufA0, (u8 *)d_compressedA0 /*d_A0*/, memSz, s);
+        moveIntoCPUMem(h_bufA0, (u8 *)d_compressedA0 /*d_A0*/, memSz, s, OpType);
         if (d_compressedA0 != (u8 *)d_A0)
             gpuFree(d_compressedA0);
-        this->exchangeShares((u8 *)h_bufA0, memSz, s);
+        this->exchangeShares((u8 *)h_bufA0, memSz, s, OpType);
         auto d_A1 = expandMem<T>(bw, N, h_bufA1, memSz, numInts, s, OpType);
         reconstructHelper(bw, N, memSz, numInts, d_A0, s, d_A1, OpType);
     }

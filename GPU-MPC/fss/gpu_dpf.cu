@@ -333,33 +333,9 @@ u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std:
 
      // Start timing for the entire gpuDcf function
     if(s){
-        switch(OpType){
-            case 0:
-                initial_compute_time = s->compute_time;
-                initial_comm_time = s->comm_time;
-                initial_transfer_time = s->transfer_time;
-                break;
-            case 1:
-                initial_compute_time = s->mha_matmul_compute_time;
-                initial_comm_time = s->mha_matmul_comm_time;
-                initial_transfer_time = s->mha_matmul_transfer_time;
-                break;
-            case 2:
-                initial_compute_time = s->mha_softmax_compute_time;
-                initial_comm_time = s->mha_softmax_comm_time;
-                initial_transfer_time = s->mha_softmax_transfer_time;
-                break;
-            case 3:
-                initial_compute_time = s->mha_rot_compute_time;
-                initial_comm_time = s->mha_rot_comm_time;
-                initial_transfer_time = s->mha_rot_transfer_time;
-                break;
-            case 4:
-                initial_compute_time = s->layernorm_compute_time;
-                initial_comm_time = s->layernorm_comm_time;
-                initial_transfer_time = s->layernorm_transfer_time;
-                break;
-        }
+        initial_compute_time = s->compute_time;
+        initial_comm_time = s->comm_time;
+        initial_transfer_time = s->transfer_time;
     }
 
     u32 *d_out;
@@ -384,33 +360,9 @@ u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std:
 
         // End timing for the entire gpuDcf function and update stats
     if(s){
-        switch(OpType){
-            case 0:
-                final_compute_time = s->compute_time;
-                final_comm_time = s->comm_time;
-                final_transfer_time = s->transfer_time;
-                break;
-            case 1:
-                final_compute_time = s->mha_matmul_compute_time;
-                final_comm_time = s->mha_matmul_comm_time;
-                final_transfer_time = s->mha_matmul_transfer_time;
-                break;
-            case 2:
-                final_compute_time = s->mha_softmax_compute_time;
-                final_comm_time = s->mha_softmax_comm_time;
-                final_transfer_time = s->mha_softmax_transfer_time;
-                break;
-            case 3:
-                final_compute_time = s->mha_rot_compute_time;
-                final_comm_time = s->mha_rot_comm_time;
-                final_transfer_time = s->mha_rot_transfer_time;
-                break;
-            case 4:
-                final_compute_time = s->layernorm_compute_time;
-                final_comm_time = s->layernorm_comm_time;
-                final_transfer_time = s->layernorm_transfer_time;
-                break;
-        }
+        final_compute_time = s->compute_time;
+        final_comm_time = s->comm_time;
+        final_transfer_time = s->transfer_time;
     }
     uint64_t compute_time = final_compute_time - initial_compute_time;
     uint64_t comm_time = final_comm_time - initial_comm_time;
