@@ -350,12 +350,12 @@ T *cutlassConv2D(GPUConv2DKey<T> k, T *d_I, T *d_F, T *d_C, char op, bool cIsBia
 }
 
 template <typename T>
-T *gpuConv2DBeaver(GPUConv2DKey<T> k, int party, T *d_I, T *d_F, T *d_a, T *d_b, T *h_bias, Stats *s, char op)
+T *gpuConv2DBeaver(GPUConv2DKey<T> k, int party, T *d_I, T *d_F, T *d_a, T *d_b, T *h_bias, Stats *s, char op, int OpType = 0)
 {
     T *d_O1, *d_O2, *d_bias = NULL;
     if (op == 0 && h_bias != NULL)
     {
-        d_bias = (T *)moveToGPU((uint8_t *)h_bias, k.p.CO * sizeof(T), s);
+        d_bias = (T *)moveToGPU((uint8_t *)h_bias, k.p.CO * sizeof(T), s, OpType);
     }
     if (party == SERVER0)
     {
@@ -364,7 +364,7 @@ T *gpuConv2DBeaver(GPUConv2DKey<T> k, int party, T *d_I, T *d_F, T *d_a, T *d_b,
     d_O1 = cutlassConv2D(k, d_I, d_b, d_bias, op, true);
     d_O2 = cutlassConv2D(k, d_a, d_F, (T *)NULL, op);
 
-    T *d_O = (T *)moveToGPU((uint8_t *)k.O, k.mem_size_O, s);
+    T *d_O = (T *)moveToGPU((uint8_t *)k.O, k.mem_size_O, s, OpType);
     gpuLinearComb(k.p.bout, k.p.size_O, d_O, T(1), d_O, party == SERVER0 ? T(1) : T(-1), d_O1, T(-1), d_O2);
     // beaverAdd<<<(k.p.size_O - 1) / block_size + 1, block_size>>>(k.p.size_O, party, k.p.bout, d_O1, d_O2, d_O);
     // checkCudaErrors(cudaDeviceSynchronize());

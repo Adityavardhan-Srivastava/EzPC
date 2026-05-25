@@ -20,6 +20,7 @@
 // SOFTWARE.
 
 #include "gpu_window.h"
+#include <chrono>
 
 struct WindowArgs
 {
@@ -134,20 +135,20 @@ T *keygenWindowMul(u8 **key_as_bytes, int party, MaxpoolParams p, T *d_mask_X, T
 }
 
 template <typename T>
-T *windowMul(SigmaPeer *peer, int party, MaxpoolParams p, GPUMulKey<T> &k, T *d_X, T *d_M, TruncateType t, AESGlobalContext *gaes, Stats *s, T *d_B = NULL)
+T *windowMul(SigmaPeer *peer, int party, MaxpoolParams p, GPUMulKey<T> &k, T *d_X, T *d_M, TruncateType t, AESGlobalContext *gaes, Stats *s, T *d_B = NULL, int OpType = 0)
 {
     auto inSz = getInSz(p);
     auto mSz = getMSz(p);
-    auto d_mulKey = (u8 *)moveToGPU((u8 *)k.a, (2 * inSz + mSz) * sizeof(T), s);
+    auto d_mulKey = (u8 *)moveToGPU((u8 *)k.a, (2 * inSz + mSz) * sizeof(T), s, OpType);
     auto d_mulOut = windowFunc<T, beaverMul<T>>(party, p, d_X, d_M, (u8 *)d_mulKey);
     gpuFree(d_mulKey);
-    peer->reconstructInPlace(d_mulOut, p.bw, inSz, s);
+    peer->reconstructInPlace(d_mulOut, p.bw, inSz, s, OpType);
     if (d_B /*&& party == SERVER1*/)
     {
         auto d_temp = windowFunc<T, xPlusM<u64(1), u64(1)>>(party, p, d_mulOut, d_B, NULL, true);
         assert(d_mulOut == d_temp);
     }
-    auto d_truncated_O = gpuTruncate<T, T>(p.bw, p.bw, t, k.trKey, p.scale, peer, party, inSz, d_mulOut, gaes, s);
+    auto d_truncated_O = gpuTruncate<T, T>(p.bw, p.bw, t, k.trKey, p.scale, peer, party, inSz, d_mulOut, gaes, s, OpType);
     if (d_truncated_O != d_mulOut)
         gpuFree(d_mulOut);
     return d_truncated_O;

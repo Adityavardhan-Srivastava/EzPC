@@ -58,6 +58,28 @@ public:
     uint64_t softmax_comm_bytes = 0;
     uint64_t layernorm_comm_bytes = 0;
 
+    // extra stats for detailed profiling
+    
+    uint64_t mha_matmul_transfer_time = 0; // OpType flag 1
+    uint64_t mha_matmul_compute_time = 0;
+    uint64_t mha_matmul_comm_time = 0;
+
+    uint64_t mha_softmax_transfer_time = 0; // OpType flag 2
+    uint64_t mha_softmax_compute_time = 0;
+    uint64_t mha_softmax_comm_time = 0;
+
+    uint64_t mha_rot_transfer_time = 0; // OpType flag 3
+    uint64_t mha_rot_compute_time = 0;
+    uint64_t mha_rot_comm_time = 0;
+
+    uint64_t layernorm_transfer_time = 0; // OpType flag 4
+    uint64_t layernorm_compute_time = 0;
+    uint64_t layernorm_comm_time = 0;
+
+    uint64_t dcf_transfer_time = 0; // OpType flag 5
+    uint64_t dcf_compute_time = 0; 
+    uint64_t dcf_comm_time = 0; 
+
     void reset()
     {
         transfer_time = 0;
@@ -94,5 +116,27 @@ public:
         softmax_comm_bytes = 0;
         gelu_comm_bytes = 0;
         mha_time = 0;
+        
+        // the extra stats
+
+        mha_matmul_transfer_time = 0;
+        mha_matmul_compute_time = 0;
+        mha_matmul_comm_time = 0;
+
+        mha_softmax_transfer_time = 0;
+        mha_softmax_compute_time = 0;
+        mha_softmax_comm_time = 0;
+
+        mha_rot_transfer_time = 0;
+        mha_rot_compute_time = 0;
+        mha_rot_comm_time = 0;
+
+        layernorm_transfer_time = 0;
+        layernorm_compute_time = 0;
+        layernorm_comm_time = 0;
+
+        dcf_transfer_time = 0;
+        dcf_compute_time = 0;
+        dcf_comm_time = 0;
     }
 };

@@ -38,11 +38,11 @@ T* gpuKeygenLUTInverse(u8** key_as_bytes, int party, int bw, int bin, int scale,
 }
 
 template <typename T>
-T* gpuLUTInverse(SigmaPeer* peer, int party, int bw, int bin, int scale, int N, GPULUTInverseKey<T> k, T* d_X, T* d_invTab, AESGlobalContext* gaes, Stats* s) {
+T* gpuLUTInverse(SigmaPeer* peer, int party, int bw, int bin, int scale, int N, GPULUTInverseKey<T> k, T* d_X, T* d_invTab, AESGlobalContext* gaes, Stats* s, int OpType = 0) {
     assert(bin - 6 <= 16);
     assert(scale == 12);
-    auto d_truncated_X = gpuTruncate<T, u16>(bin, bin - 6, TruncateType::TrWithSlack, k.trKey, /*std::max(bin - 13, 0)*/6, peer, party, k.N, d_X, gaes, s);
-    auto d_invX = gpuDpfLUT<u16, T>(k.lutKey, peer, party, d_truncated_X, d_invTab, gaes, s);
+    auto d_truncated_X = gpuTruncate<T, u16>(bin, bin - 6, TruncateType::TrWithSlack, k.trKey, /*std::max(bin - 13, 0)*/6, peer, party, k.N, d_X, gaes, s, OpType);
+    auto d_invX = gpuDpfLUT<u16, T>(k.lutKey, peer, party, d_truncated_X, d_invTab, gaes, s, true, OpType);
     gpuFree(d_truncated_X);
     return d_invX;
 }

@@ -54,7 +54,7 @@ public:
     void freeCommBufs(bool pinMem);
     void sendBytes(const u8 *data, size_t size);
     void recvBytes(u8 *data, size_t size);
-    /*virtual*/ void exchangeShares(u8 *to_send, size_t bytes, Stats *s);
+    /*virtual*/ void exchangeShares(u8 *to_send, size_t bytes, Stats *s, int OpType = 0);
     void connect(int party, std::string addr, int port);
     inline void sync()
     {
@@ -84,14 +84,14 @@ public:
 
     template <typename T>
     void getMemSz(int bw, u64 N, size_t &memSz, size_t &numInts);
-    virtual void Send(u64 *h_A0, int bw, u64 N, Stats *s) = 0;
-    virtual void Send(u32 *h_A0, int bw, u64 N, Stats *s) = 0;
-    virtual void Send(u8 *h_A0, int bw, u64 N, Stats *s) = 0;
-    virtual u8 *Recv(int bw, u64 N, Stats *s) = 0;
-    virtual void reconstructInPlace(u64 *A0, int bw, u64 N, Stats *s) = 0;
-    virtual void reconstructInPlace(u32 *A0, int bw, u64 N, Stats *s) = 0;
-    virtual void reconstructInPlace(u16 *A0, int bw, u64 N, Stats *s) = 0;
-    virtual void reconstructInPlace(u8 *A0, int bw, u64 N, Stats *s) = 0;
-    virtual u64 *addAndReconstruct(int bw, u64 N, u64 *A0, u64 *B0, Stats *s, bool inPlace) = 0;
-    virtual u32 *addAndReconstruct(int bw, u64 N, u32 *A0, u32 *B0, Stats *s, bool inPlace) = 0;
+    virtual void Send(u64 *h_A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual void Send(u32 *h_A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual void Send(u8 *h_A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual u8 *Recv(int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual void reconstructInPlace(u64 *A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual void reconstructInPlace(u32 *A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual void reconstructInPlace(u16 *A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual void reconstructInPlace(u8 *A0, int bw, u64 N, Stats *s, int OpType = 0) = 0;
+    virtual u64 *addAndReconstruct(int bw, u64 N, u64 *A0, u64 *B0, Stats *s, bool inPlace, int OpType = 0) = 0;
+    virtual u32 *addAndReconstruct(int bw, u64 N, u32 *A0, u32 *B0, Stats *s, bool inPlace, int OpType = 0) = 0;
 };

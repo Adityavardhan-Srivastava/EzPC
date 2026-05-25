@@ -74,11 +74,12 @@ __global__ void addBiasKernel(int batchSz, int M, int N, int bw, T *A, T *b)
 }
 
 template <typename T>
-void gpuAddBias(int batchSz, int M, int N, int bw, T *d_A, T *h_b, Stats *s)
+void gpuAddBias(int batchSz, int M, int N, int bw, T *d_A, T *h_b, Stats *s, int OpType = 0)
 {
     // assert(bw == sizeof(T) * 8);
     size_t memSizeB = batchSz * N * sizeof(T);
-    auto d_b = (T *)moveToGPU((uint8_t *)h_b, memSizeB, s);
+    auto d_b = (T *)moveToGPU((uint8_t *)h_b, memSizeB, s, OpType);
+    // Add code to time the kernel and add to the stats object if we decide to pass s to this function someday (look at the wrapper below)
     addBiasKernel<<<(batchSz * M * N - 1) / 128 + 1, 128>>>(batchSz, M, N, bw, d_A, d_b);
     checkCudaErrors(cudaDeviceSynchronize());
     gpuFree(d_b);
@@ -89,7 +90,7 @@ void gpuAddBiasWrapper(int batchSz, int M, int N, int bw, T *h_A, T *h_b)
 { // check this once
     size_t memSizeA = batchSz * M * N * sizeof(T);
     auto d_A = (T *)moveToGPU((uint8_t *)h_A, memSizeA, NULL);
-    gpuAddBias(batchSz, M, N, bw, d_A, h_b, NULL);
+    gpuAddBias(batchSz, M, N, bw, d_A, h_b, NULL, 0); // Not passing the stats object for some reason
     moveIntoCPUMem((uint8_t *)h_A, (uint8_t *)d_A, memSizeA, NULL);
     gpuFree(d_A);
 }

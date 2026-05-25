@@ -47,7 +47,7 @@ inline void initPoolParams(AvgPoolParams &p)
 }
 
 template <typename T>
-T* gpuAddPool(AvgPoolParams p, T* d_I, Stats* s);
+T* gpuAddPool(AvgPoolParams p, T* d_I, Stats* s, int OpType = 0);
 
 
 #include "gpu_avgpool.cu"

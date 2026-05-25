@@ -23,6 +23,7 @@
 #include "gpu_truncate.h"
 #include "gpu_mul.h"
 #include "gpu_relu.h"
+#include <chrono>
 
 template <typename T>
 T *gpuKeygenNExp(u8 **key_as_bytes, int party, int bw, int bin, int scale, int N, T *d_mask_X, AESGlobalContext *gaes)
@@ -50,19 +51,19 @@ T *gpuKeygenNExp(u8 **key_as_bytes, int party, int bw, int bin, int scale, int N
 }
 
 template <typename T>
-T *gpuNExp(SigmaPeer* peer, int party, int bw, int bin, int scale, int N, GPUNExpKey<T> k, T *d_X, T* d_nExpMsbTab, T* d_nExpLsbTab, AESGlobalContext *gaes, Stats *s)
+T *gpuNExp(SigmaPeer* peer, int party, int bw, int bin, int scale, int N, GPUNExpKey<T> k, T *d_X, T* d_nExpMsbTab, T* d_nExpLsbTab, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     const u64 p = (1ULL << 16) - 1;
-    auto d_clippedX = gpuRelu<T, u16, p, p, true>(peer, party, k.reluKey, d_X, gaes, s);
+    auto d_clippedX = gpuRelu<T, u16, p, p, true>(peer, party, k.reluKey, d_X, gaes, s, OpType);
     // printf("Starting LSB LUT=%d, %d\n", N, k.N);
-    auto d_lsbLookup = gpuDpfLUT<u16, T>(k.lsbLutKey, peer, party, d_clippedX, d_nExpLsbTab, gaes, s);
-    auto d_msb = gpuTruncate<u16, u8>(16, 8, TruncateType::TrWithSlack, k.trKey, 8, peer, party, k.N, d_clippedX, gaes, s);
+    auto d_lsbLookup = gpuDpfLUT<u16, T>(k.lsbLutKey, peer, party, d_clippedX, d_nExpLsbTab, gaes, s, true, OpType);
+    auto d_msb = gpuTruncate<u16, u8>(16, 8, TruncateType::TrWithSlack, k.trKey, 8, peer, party, k.N, d_clippedX, gaes, s, OpType);
     gpuFree(d_clippedX);
     // printf("Starting MSB LUT\n");
-    auto d_msbLookup = gpuDpfLUT<u8, T>(k.msbLutKey, peer, party, d_msb, d_nExpMsbTab, gaes, s);
+    auto d_msbLookup = gpuDpfLUT<u8, T>(k.msbLutKey, peer, party, d_msb, d_nExpMsbTab, gaes, s, true, OpType);
     gpuFree(d_msb);
     // don't add comm here?
-    auto d_nExp = gpuMul(peer, party, bw, scale, k.N, k.mulKey, d_msbLookup, d_lsbLookup, TruncateType::TrWithSlack, gaes, NULL);
+    auto d_nExp = gpuMul(peer, party, bw, scale, k.N, k.mulKey, d_msbLookup, d_lsbLookup, TruncateType::TrWithSlack, gaes, NULL, OpType);
     gpuFree(d_lsbLookup);
     gpuFree(d_msbLookup);
     // printf("N=%d\n", N);

@@ -25,6 +25,6 @@
 #include <cutlass/cutlass.h>
 #include "utils/helper_cutlass.h"
 
-template <typename T> void gpuAddBias(int batchSz, int N, int M, int bw, T* d_A, T* h_b, Stats* s);
+template <typename T> void gpuAddBias(int batchSz, int N, int M, int bw, T* d_A, T* h_b, Stats* s, int OpType = 0);
 
 #include "gpu_linear_helper.cu"

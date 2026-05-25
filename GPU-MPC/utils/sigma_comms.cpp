@@ -103,7 +103,7 @@ void SigmaPeer::recvBytes(u8 *data, size_t size)
     peer->keyBuf->bytesReceived += size;
 }
 
-void SigmaPeer::exchangeShares(u8 *to_send, size_t bytes, Stats *s)
+void SigmaPeer::exchangeShares(u8 *to_send, size_t bytes, Stats *s, int OpType = 0)
 {
     auto start = std::chrono::high_resolution_clock::now();
     // #pragma omp parallel /*sections*/ num_threads(2)
@@ -143,10 +143,31 @@ void SigmaPeer::exchangeShares(u8 *to_send, size_t bytes, Stats *s)
     // recv_thread.join();
     auto end = std::chrono::high_resolution_clock::now();
     auto elapsed = end - start;
-    if (s)
+    if (s){
         s->comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
     // std::cout << "Time to exchange shares in ms: " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << " " << s->comm_time << std::endl;
     // return h_bufA1;
+
+    // Update flag-specific stats using OpType to identify the operation
+        switch (OpType)
+        {
+        case 1:
+            s->mha_matmul_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 2:
+            s->mha_softmax_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 3:
+            s->mha_rot_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 4:
+            s->layernorm_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 5:
+            s->dcf_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        }
+    }
 }
 
 void SigmaPeer::connect(int party, std::string addr, int port)

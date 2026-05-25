@@ -21,6 +21,8 @@
 
 #pragma once
 
+#include <chrono>
+
 #include "utils/gpu_data_types.h"
 #include "gpu_dpf_templates.h"
 
@@ -78,13 +80,28 @@ __global__ void lookupSSTable(int party, int bin, int N,
 
 
 template <typename T, int E, dpfPrologue pr, dpfEpilogue ep>
-u32 *gpuLookupSSTable(GPUSSTabKey &k, int party, T *d_in, Stats* s, std::vector<u32 *> *h_masks=NULL)
+u32 *gpuLookupSSTable(GPUSSTabKey &k, int party, T *d_in, Stats* s, std::vector<u32 *> *h_masks=NULL, int OpType = 0)
 {
-    auto d_out = moveMasks(k.memSzOut, h_masks, s);
+    auto d_out = moveMasks(k.memSzOut, h_masks, s, OpType);
     // printf("Bin=%d, Memsz=%ld\n", k.bin, k.memSzSS);
-    auto d_ss = (u8 *)moveToGPU((u8 *)k.ss, k.memSzSS, s);
+    auto d_ss = (u8 *)moveToGPU((u8 *)k.ss, k.memSzSS, s, OpType);
+
+    auto start = std::chrono::high_resolution_clock::now();
     lookupSSTable<T, E, pr, ep><<<(k.N - 1) / 128 + 1, 128>>>(party, k.bin, k.N, d_in, d_ss, d_out);
     checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = end - start;
+    if (s){
+        s->compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 2: s->mha_softmax_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 3: s->mha_rot_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 4: s->layernorm_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 5: s->dcf_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+        }
+    }
+
     gpuFree(d_ss);
     return d_out;
 }

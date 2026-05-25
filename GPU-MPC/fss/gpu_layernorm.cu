@@ -185,7 +185,7 @@ T *gpuKeygenLayerNorm(u8 **key_as_bytes, int party, AvgPoolParams p, T *d_mask_A
 }
 
 template <typename T>
-T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> k, T *d_A, T *d_B, T *d_X, std::vector<GroupElement> *invSqrtTab, AESGlobalContext *gaes, Stats *s, bool computeMu = true)
+T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> k, T *d_A, T *d_B, T *d_X, std::vector<GroupElement> *invSqrtTab, AESGlobalContext *gaes, Stats *s, bool computeMu = true, int OpType = 0)
 {
     assert(8 * sizeof(T) == 64);
     int inSz = getInSz(p);
@@ -197,33 +197,33 @@ T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> 
         T *d_mu;
         if ((p.imgW & (p.imgW - 1)) == 0)
         {
-            d_mu = gpuTruncate<T, T>(p.bw, p.bw, TruncateType::TrFloor, k.muTrKey, int(log2(p.imgW)), peer, party, mSz, d_sum, gaes, s);
+            d_mu = gpuTruncate<T, T>(p.bw, p.bw, TruncateType::TrFloor, k.muTrKey, int(log2(p.imgW)), peer, party, mSz, d_sum, gaes, s, 4);
         }
         else
         {
             gpuLinearComb(p.bw, mSz, d_sum, T((1LL << p.scale) / (double)p.imgW), d_sum);
-            d_mu = gpuTruncate<T, T>(p.bw, p.bw, TruncateType::TrFloor, k.muTrKey, p.scale, peer, party, mSz, d_sum, gaes, s);
+            d_mu = gpuTruncate<T, T>(p.bw, p.bw, TruncateType::TrFloor, k.muTrKey, p.scale, peer, party, mSz, d_sum, gaes, s, 4);
         }
         gpuFree(d_sum);
         d_xMMu = windowFunc<T, xPlusM<u64(1), u64(-1)>>(party, p, d_X, d_mu);
     }
-    auto d_sqKey = (u8 *)moveToGPU((u8 *)k.sqKey.a, (2 * inSz) * sizeof(T), s);
+    auto d_sqKey = (u8 *)moveToGPU((u8 *)k.sqKey.a, (2 * inSz) * sizeof(T), s, 4);
     auto d_sq = pointFunc<T, square<T>>(party, p.bw, inSz, d_xMMu, (u8 *)d_sqKey);
     gpuFree(d_sqKey);
 
     auto d_sumSq = gpuSum(p.bw, p.imgH, p.imgW, d_sq);
     gpuFree(d_sq);
-    peer->reconstructInPlace(d_sumSq, p.bw, mSz, s);
+    peer->reconstructInPlace(d_sumSq, p.bw, mSz, s, 4);
 
-    auto h_sumSq = (T *)moveToCPU((u8 *)d_sumSq, p.imgH * sizeof(T), s);
+    auto h_sumSq = (T *)moveToCPU((u8 *)d_sumSq, p.imgH * sizeof(T), s, 4);
     Rsqrt(p.imgH, h_sumSq, h_sumSq, p.imgW, p.scale, "LayerNorm::", invSqrtTab);
-    moveIntoGPUMem((u8 *)d_sumSq, (u8 *)h_sumSq, mSz * sizeof(T), s);
+    moveIntoGPUMem((u8 *)d_sumSq, (u8 *)h_sumSq, mSz * sizeof(T), s, 4);
     // (x - mu)*var
     auto d_invSqrt = d_sumSq;
-    auto d_normX = windowMul(peer, party, p, k.wMulKey1, d_xMMu, d_invSqrt, TruncateType::TrWithSlack, gaes, s);
+    auto d_normX = windowMul<u64>(peer, party, p, k.wMulKey1, d_xMMu, d_invSqrt, TruncateType::TrWithSlack, gaes, s, nullptr, 4);
     gpuFree(d_invSqrt);
     auto p2 = transposeWindow(p);
-    auto d_layerNorm = windowMul(peer, party, p2, k.wMulKey2, d_normX, d_A, TruncateType::TrWithSlack, gaes, s, d_B);
+    auto d_layerNorm = windowMul(peer, party, p2, k.wMulKey2, d_normX, d_A, TruncateType::TrWithSlack, gaes, s, d_B, 4);
     gpuFree(d_normX);
     return d_layerNorm;
 }

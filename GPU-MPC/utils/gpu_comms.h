@@ -95,7 +95,7 @@ class GpuPeer : public SigmaPeer
 {
 private:
     template <typename T>
-    u8 *compressMem(int bw, int modBw, int N, T *d_A0, size_t &memSz, size_t &numInts, Stats *s, bool returnNew = false)
+    u8 *compressMem(int bw, int modBw, int N, T *d_A0, size_t &memSz, size_t &numInts, Stats *s, bool returnNew = false, int OpType = 0)
     {
         assert(modBw == bw);
         u8 *d_compressedA0;
@@ -129,15 +129,16 @@ private:
     }
 
     template <typename T>
-    T *expandMem(int bw, int N, u8 *h_compressedA, size_t memSz, size_t numInts, Stats *s)
+    T *expandMem(int bw, int N, u8 *h_compressedA, size_t memSz, size_t numInts, Stats *s, int OpType = 0)
     {
         T *d_A;
         if (this->compress && bw > 2 && bw < 8 * sizeof(T))
         {
-            auto d_compressedA = (u8 *)moveToGPU(h_compressedA, memSz, s);
+            auto d_compressedA = (u8 *)moveToGPU(h_compressedA, memSz, s, OpType);
             // size in bytes
             memSz = size_t(N * sizeof(T));
             d_A = (T *)gpuMalloc(memSz);
+            // to add this as computation or not?
             expandKernel<<<(N - 1) / 128 + 1, 128>>>(bw, N, d_compressedA, (T *)d_A);
             checkCudaErrors(cudaDeviceSynchronize());
             gpuFree(d_compressedA);
@@ -147,7 +148,7 @@ private:
             // don't need this here
             // getMemSz<T>(bw, N, memSz, numInts);
             // printf("Moving to gpu\n");
-            d_A = (T *)moveToGPU((u8 *)h_compressedA, memSz, s);
+            d_A = (T *)moveToGPU((u8 *)h_compressedA, memSz, s, OpType);
         }
         return d_A;
     }
@@ -162,12 +163,12 @@ private:
     }
 
     template <typename T>
-    void reconstructHelper(int bw, int N, u64 memSz, int numInts, T *d_A0, Stats *s, T *d_A1 = NULL)
+    void reconstructHelper(int bw, int N, u64 memSz, int numInts, T *d_A0, Stats *s, T *d_A1 = NULL, int OpType = 0)
     {
         if (!d_A1)
-            d_A1 = (T *)moveToGPU((u8 *)h_bufA1, memSz, s);
+            d_A1 = (T *)moveToGPU((u8 *)h_bufA1, memSz, s, OpType);
         if (bw == 1)
-            gpuXor((u32 *)d_A0, (u32 *)d_A1, numInts, s);
+            gpuXor((u32 *)d_A0, (u32 *)d_A1, numInts, s, OpType);
         else if (bw == 2)
             gpuAddMod4((u32 *)d_A0, (u32 *)d_A1, N);
         else
@@ -207,25 +208,25 @@ public:
     }
 
     template <typename T>
-    void _reconstructInPlace(T *d_A0, int bw, int N, Stats *s)
+    void _reconstructInPlace(T *d_A0, int bw, int N, Stats *s, int OpType = 0)
     {
         // printf("%d, %d\n", bw, N);
         size_t memSz = 0, numInts = 0;
-        auto d_compressedA0 = compressMem(bw, bw, N, d_A0, memSz, numInts, s);
+        auto d_compressedA0 = compressMem(bw, bw, N, d_A0, memSz, numInts, s, false, OpType);
         moveIntoCPUMem(h_bufA0, (u8 *)d_compressedA0 /*d_A0*/, memSz, s);
         if (d_compressedA0 != (u8 *)d_A0)
             gpuFree(d_compressedA0);
         this->exchangeShares((u8 *)h_bufA0, memSz, s);
-        auto d_A1 = expandMem<T>(bw, N, h_bufA1, memSz, numInts, s);
-        reconstructHelper(bw, N, memSz, numInts, d_A0, s, d_A1);
+        auto d_A1 = expandMem<T>(bw, N, h_bufA1, memSz, numInts, s, OpType);
+        reconstructHelper(bw, N, memSz, numInts, d_A0, s, d_A1, OpType);
     }
 
     template <typename T>
-    void _send(T *d_A0, int bw, int N, Stats *s)
+    void _send(T *d_A0, int bw, int N, Stats *s, int OpType = 0)
     {
         size_t memSz = 0, numInts = 0;
-        auto d_compressedA0 = compressMem(bw, bw, N, d_A0, memSz, numInts, s);
-        moveIntoCPUMem(h_bufA0, (u8 *)d_compressedA0 /*d_A0*/, memSz, s);
+        auto d_compressedA0 = compressMem(bw, bw, N, d_A0, memSz, numInts, s, false, OpType);
+        moveIntoCPUMem(h_bufA0, (u8 *)d_compressedA0 /*d_A0*/, memSz, s, OpType);
         if (d_compressedA0 != (u8 *)d_A0)
             gpuFree(d_compressedA0);
         auto start = std::chrono::high_resolution_clock::now();
@@ -233,11 +234,32 @@ public:
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = end - start;
         if (s)
+        {
             s->comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            // Update flag-specific stats using OpType to identify the operation
+            switch (OpType)
+            {
+            case 1:
+                s->mha_matmul_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 2:
+                s->mha_softmax_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 3:
+                s->mha_rot_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 4:
+                s->layernorm_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 5:
+                s->dcf_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            }
+        }
     }
 
     template <typename T>
-    T *_recv(int bw, int N, Stats *s)
+    T *_recv(int bw, int N, Stats *s, int OpType = 0)
     {
         size_t memSz = 0, numInts = 0;
         this->getMemSz<T>(bw, N, memSz, numInts);
@@ -246,70 +268,91 @@ public:
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = end - start;
         if (s)
+        {
             s->comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            // Update flag-specific stats using OpType to identify the operation
+            switch (OpType)
+            {
+            case 1:
+                s->mha_matmul_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 2:
+                s->mha_softmax_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 3:
+                s->mha_rot_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 4:
+                s->layernorm_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 5:
+                s->dcf_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            }
+        }
 
-        auto d_A1 = expandMem<T>(bw, N, h_bufA0, memSz, numInts, s);
+        auto d_A1 = expandMem<T>(bw, N, h_bufA0, memSz, numInts, s, OpType);
         return d_A1;
     }
 
-    void Send(u64 *h_A0, int bw, u64 N, Stats *s)
+    void Send(u64 *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _send<u64>(h_A0, bw, N, s);
+        _send<u64>(h_A0, bw, N, s, OpType);
     }
 
-    void Send(u32 *h_A0, int bw, u64 N, Stats *s)
+    void Send(u32 *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _send<u32>(h_A0, bw, N, s);
+        _send<u32>(h_A0, bw, N, s, OpType);
     }
 
-    void Send(u8 *h_A0, int bw, u64 N, Stats *s)
+    void Send(u8 *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _send<u8>(h_A0, bw, N, s);
+        _send<u8>(h_A0, bw, N, s, OpType);
     }
 
-    u8 *Recv(int bw, u64 N, Stats *s)
+    u8 *Recv(int bw, u64 N, Stats *s, int OpType = 0)
     {
-        return _recv<u8>(bw, N, s);
+        return _recv<u8>(bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u64 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u64 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u64>(A0, bw, N, s);
+        _reconstructInPlace<u64>(A0, bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u32 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u32 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u32>(A0, bw, N, s);
+        _reconstructInPlace<u32>(A0, bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u16 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u16 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u16>(A0, bw, N, s);
+        _reconstructInPlace<u16>(A0, bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u8 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u8 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u8>(A0, bw, N, s);
+        _reconstructInPlace<u8>(A0, bw, N, s, OpType);
     }
 
     template <typename T>
-    T *_addAndReconstruct(int bw, u64 N, T *d_A0, T *h_B0, Stats *s)
+    T *_addAndReconstruct(int bw, u64 N, T *d_A0, T *h_B0, Stats *s, int OpType = 0)
 
     {
-        auto d_B0 = (T *)moveToGPU((u8 *)h_B0, N * sizeof(T), s);
+        auto d_B0 = (T *)moveToGPU((u8 *)h_B0, N * sizeof(T), s, OpType);
         gpuLinearComb(bw, N, d_A0, T(1), d_A0, T(1), d_B0);
         gpuFree(d_B0);
-        _reconstructInPlace(d_A0, bw, N, s);
+        _reconstructInPlace(d_A0, bw, N, s, OpType);
         return d_A0;
     }
 
-    u64 *addAndReconstruct(int bw, u64 N, u64 *d_A0, u64 *h_B0, Stats *s, bool inPlace = true)
+    u64 *addAndReconstruct(int bw, u64 N, u64 *d_A0, u64 *h_B0, Stats *s, bool inPlace = true, int OpType = 0)
     {
         assert(inPlace == true);
-        return _addAndReconstruct(bw, N, d_A0, h_B0, s);
+        return _addAndReconstruct(bw, N, d_A0, h_B0, s, OpType);
     }
 
-    u32 *addAndReconstruct(int bw, u64 N, u32 *A0, u32 *B0, Stats *s, bool inPlace)
+    u32 *addAndReconstruct(int bw, u64 N, u32 *A0, u32 *B0, Stats *s, bool inPlace, int OpType = 0)
     {
         assert(0);
     }

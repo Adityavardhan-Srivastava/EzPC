@@ -30,7 +30,7 @@ class CpuPeer : public SigmaPeer
 private:
     // compression also takes time
     template <typename T>
-    u8 *cpuCompressMem(int bw, int modBw, int N, T *h_A0, size_t &memSz, size_t &numInts, Stats *s)
+    u8 *cpuCompressMem(int bw, int modBw, int N, T *h_A0, size_t &memSz, size_t &numInts, Stats *s, int OpType = 0)
     {
         assert(modBw == bw);
         memSz = size_t((N * bw - 1) / 64 + 1) * 8;
@@ -136,7 +136,7 @@ public:
     }
 
     template <typename T>
-    void _send(T *h_A0, int bw, u64 N, Stats *s)
+    void _send(T *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
         size_t memSz = 0, numInts = 0;
         this->getMemSz<T>(bw, N, memSz, numInts);
@@ -146,11 +146,32 @@ public:
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = end - start;
         if (s)
+        {
             s->comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            // Update flag-specific stats using OpType to identify the operation
+            switch (OpType)
+            {
+            case 1:
+                s->mha_matmul_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 2:
+                s->mha_softmax_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 3:
+                s->mha_rot_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 4:
+                s->layernorm_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 5:
+                s->dcf_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            }
+        }
     }
 
     template <typename T>
-    T *_recv(int bw, u64 N, Stats *s)
+    T *_recv(int bw, u64 N, Stats *s, int OpType = 0)
     {
         size_t memSz = 0, numInts = 0;
         this->getMemSz<T>(bw, N, memSz, numInts);
@@ -161,16 +182,37 @@ public:
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = end - start;
         if (s)
+        {
             s->comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            // Update flag-specific stats using OpType to identify the operation
+            switch (OpType)
+            {
+            case 1:
+                s->mha_matmul_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 2:
+                s->mha_softmax_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 3:
+                s->mha_rot_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 4:
+                s->layernorm_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 5:
+                s->dcf_comm_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            }
+        }
         return h_A;
     }
 
     template <typename T>
-    void _reconstructInPlace(T *A0, int bw, u64 N, Stats *s)
+    void _reconstructInPlace(T *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
         size_t memSz = 0, numInts = 0;
         this->getMemSz<T>(bw, N, memSz, numInts);
-        this->exchangeShares((u8 *)A0, memSz, s);
+        this->exchangeShares((u8 *)A0, memSz, s, OpType);
         if (bw == 1)
             cpuXor(numInts, (u32 *)A0, (u32 *)h_bufA1);
         else
@@ -178,64 +220,64 @@ public:
     }
 
     template <typename T>
-    T *_addAndReconstruct(int bw, u64 N, T *A0, T *B0, Stats *s, bool inPlace)
+    T *_addAndReconstruct(int bw, u64 N, T *A0, T *B0, Stats *s, bool inPlace, int OpType = 0)
     {
         auto C0 = A0;
         if (inPlace)
             cpuAddInPlace(bw, N, A0, B0);
         else
             C0 = cpuAdd(bw, N, A0, B0);
-        this->reconstructInPlace(C0, bw, N, s);
+        this->reconstructInPlace(C0, bw, N, s, OpType);
         return C0;
     }
 
-    void Send(u64 *h_A0, int bw, u64 N, Stats *s)
+    void Send(u64 *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _send<u64>(h_A0, bw, N, s);
+        _send<u64>(h_A0, bw, N, s, OpType);
     }
 
-    void Send(u32 *h_A0, int bw, u64 N, Stats *s)
+    void Send(u32 *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _send<u32>(h_A0, bw, N, s);
+        _send<u32>(h_A0, bw, N, s, OpType);
     }
 
-    void Send(u8 *h_A0, int bw, u64 N, Stats *s)
+    void Send(u8 *h_A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _send<u8>(h_A0, bw, N, s);
+        _send<u8>(h_A0, bw, N, s, OpType);
     }
 
-    u8 *Recv(int bw, u64 N, Stats *s)
+    u8 *Recv(int bw, u64 N, Stats *s, int OpType = 0)
     {
-        return _recv<u8>(bw, N, s);
+        return _recv<u8>(bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u64 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u64 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u64>(A0, bw, N, s);
+        _reconstructInPlace<u64>(A0, bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u32 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u32 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u32>(A0, bw, N, s);
+        _reconstructInPlace<u32>(A0, bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u16 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u16 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u16>(A0, bw, N, s);
+        _reconstructInPlace<u16>(A0, bw, N, s, OpType);
     }
 
-    void reconstructInPlace(u8 *A0, int bw, u64 N, Stats *s)
+    void reconstructInPlace(u8 *A0, int bw, u64 N, Stats *s, int OpType = 0)
     {
-        _reconstructInPlace<u8>(A0, bw, N, s);
+        _reconstructInPlace<u8>(A0, bw, N, s, OpType);
     }
 
-    u64 *addAndReconstruct(int bw, u64 N, u64 *A0, u64 *B0, Stats *s, bool inPlace = false)
+    u64 *addAndReconstruct(int bw, u64 N, u64 *A0, u64 *B0, Stats *s, bool inPlace = false, int OpType = 0)
     {
-        return _addAndReconstruct<u64>(bw, N, A0, B0, s, inPlace);
+        return _addAndReconstruct<u64>(bw, N, A0, B0, s, inPlace, OpType);
     }
 
-    u32 *addAndReconstruct(int bw, u64 N, u32 *A0, u32 *B0, Stats *s, bool inPlace)
+    u32 *addAndReconstruct(int bw, u64 N, u32 *A0, u32 *B0, Stats *s, bool inPlace = false, int OpType = 0)
     {
-        return _addAndReconstruct<u32>(bw, N, A0, B0, s, inPlace);
+        return _addAndReconstruct<u32>(bw, N, A0, B0, s, inPlace, OpType);
     }
 };

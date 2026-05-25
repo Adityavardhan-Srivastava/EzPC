@@ -308,39 +308,63 @@ void gmwGpuKeygenMatmul(u8 **key_as_bytes, int party, MatmulParams p, T *h_W)
 }
 
 template <typename T>
-T *gpuMatmulBeaver(MatmulParams p, GPUMatmulKey<T> k, int party, T *d_A, T *d_B, T *d_r0, T *d_r1, T *d_bias, Stats *s)
+T *gpuMatmulBeaver(MatmulParams p, GPUMatmulKey<T> k, int party, T *d_A, T *d_B, T *d_r0, T *d_r1, T *d_bias, Stats *s, int OpType = 0)
 {
     T *d_C1, *d_C2;
     if (party == SERVER0)
     {
         gpuLinearComb(p.bw, p.size_B, d_r1, T(1), d_B, T(-1), d_r1);
     }
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    
     d_C1 = cutlassMatmulWrapper<T>(p, d_A, d_r1, d_bias, true);
     d_C2 = cutlassMatmulWrapper<T>(p, d_r0, d_B, NULL);
-    T *d_C = (T *)moveToGPU((u8 *)k.C, k.mem_size_C, s);
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    // RECORD TIME
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
+
+    T *d_C = (T *)moveToGPU((u8 *)k.C, k.mem_size_C, s, OpType);
     gpuLinearComb(p.bw, p.size_C, d_C, T(1), d_C, party == SERVER0 ? T(1) : T(-1), d_C1, T(-1), d_C2);
+    checkCudaErrors(cudaDeviceSynchronize());
+
     gpuFree(d_C1);
     gpuFree(d_C2);
     return d_C;
 }
 
 template <typename T>
-T *gpuMatmul(SigmaPeer *peer, int party, MatmulParams p, GPUMatmulKey<T> &k, T *d_X, T *h_W, T *h_Y, TruncateType t, AESGlobalContext *gaes, Stats *s, bool wIsOnGpu = false, T* d_mask_X = nullptr)
+T *gpuMatmul(SigmaPeer *peer, int party, MatmulParams p, GPUMatmulKey<T> &k, T *d_X, T *h_W, T *h_Y, TruncateType t, AESGlobalContext *gaes, Stats *s, bool wIsOnGpu = false, T* d_mask_X = nullptr, int OpType = 0)
 {
     // printf("X=%lx, %lu\n", d_X, k.mem_size_A);
     u64 b0 = peer->bytesSent() + peer->bytesReceived();
     if (!d_mask_X)
-        d_mask_X = (T *)moveToGPU((u8 *)k.A, k.mem_size_A, s);
+        d_mask_X = (T *)moveToGPU((u8 *)k.A, k.mem_size_A, s, OpType);
     auto d_W = h_W;
     if (!wIsOnGpu)
-        d_W = (T *)moveToGPU((u8 *)h_W, k.mem_size_B, s);
-    auto d_mask_W = (T *)moveToGPU((u8 *)k.B, k.mem_size_B, s);
+        d_W = (T *)moveToGPU((u8 *)h_W, k.mem_size_B, s, OpType);
+    auto d_mask_W = (T *)moveToGPU((u8 *)k.B, k.mem_size_B, s, OpType);
     T *d_Y = NULL;
     // printf("N=%d, batchSz=%d\n", p.N, p.batchSz);
     if (party == SERVER0 && h_Y)
-        d_Y = (T *)moveToGPU((u8 *)h_Y, p.batchSz * p.N * sizeof(T), s);
+        d_Y = (T *)moveToGPU((u8 *)h_Y, p.batchSz * p.N * sizeof(T), s, OpType);
 
-    auto d_Z = gpuMatmulBeaver(p, k, party, d_X, d_W, d_mask_X, d_mask_W, d_Y, s);
+auto d_Z = gpuMatmulBeaver(p, k, party, d_X, d_W, d_mask_X, d_mask_W, d_Y, s, OpType);
     // printf("Finished matmul\n");
     gpuFree(d_mask_X);
     if (!wIsOnGpu)
@@ -349,9 +373,9 @@ T *gpuMatmul(SigmaPeer *peer, int party, MatmulParams p, GPUMatmulKey<T> &k, T *
     if (d_Y)
         gpuFree(d_Y);
 
-    peer->reconstructInPlace(d_Z, p.bw, p.size_C, s);
+    peer->reconstructInPlace(d_Z, p.bw, p.size_C, s, OpType);
 
-    auto d_truncatedZ = gpuTruncate<T, T>(p.bw, p.bw, t, k.trKey, p.shift, peer, party, p.size_C, d_Z, gaes, s); //, true);
+    auto d_truncatedZ = gpuTruncate<T, T>(p.bw, p.bw, t, k.trKey, p.shift, peer, party, p.size_C, d_Z, gaes, s, OpType); //, true);
     if (d_Z != d_truncatedZ)
         gpuFree(d_Z);
 
@@ -361,16 +385,16 @@ T *gpuMatmul(SigmaPeer *peer, int party, MatmulParams p, GPUMatmulKey<T> &k, T *
 }
 
 template <typename T>
-T *gpuMatmulGmw(SigmaPeer *peer, int party, MatmulParams p, GPUMatmulKey<T> &k, T *d_X, T *d_mask_X, T *d_W, T *d_mask_W, T *h_Y, Stats *s)
+T *gpuMatmulGmw(SigmaPeer *peer, int party, MatmulParams p, GPUMatmulKey<T> &k, T *d_X, T *d_mask_X, T *d_W, T *d_mask_W, T *h_Y, Stats *s, int OpType = 0)
 {
     T *d_Y = NULL;
     printf("Adding bias=%lx\n", h_Y);
     if (h_Y)
     {
         printf("here\n");
-        d_Y = (T *)moveToGPU((u8 *)h_Y, p.batchSz * p.N * sizeof(T), s);
+        d_Y = (T *)moveToGPU((u8 *)h_Y, p.batchSz * p.N * sizeof(T), s, OpType);
     }
-    auto d_Z = gpuMatmulBeaver(p, k, party, d_X, d_W, d_mask_X, d_mask_W, d_Y, s);
+    auto d_Z = gpuMatmulBeaver(p, k, party, d_X, d_W, d_mask_X, d_mask_W, d_Y, s, OpType);
     if (d_Y)
         gpuFree(d_Y);
     return d_Z;

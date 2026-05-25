@@ -19,6 +19,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include <chrono>
+
 #include "utils/gpu_mem.h"
 #include "utils/misc_utils.h"
 #include "utils/gpu_random.h"
@@ -56,22 +58,39 @@ __global__ void selectKernel(u32 *X,
 }
 
 template <typename TIn, typename TOut, u64 p, u64 q>
-TOut *gpuSelect(SigmaPeer *peer, int party, int bw, GPUSelectKey<TOut> k, u32 *d_x, TIn *d_Y, Stats *s, bool opMasked = true)
+TOut *gpuSelect(SigmaPeer *peer, int party, int bw, GPUSelectKey<TOut> k, u32 *d_x, TIn *d_Y, Stats *s, bool opMasked = true, int OpType = 0)
 {
     assert(bw <= 8 * sizeof(TOut));
     size_t memSz = k.N * sizeof(TOut);
 
-    TOut *d_a = (TOut *)moveToGPU((uint8_t *)k.a, memSz, s);
-    TOut *d_b = (TOut *)moveToGPU((uint8_t *)k.b, memSz, s);
-    TOut *d_c = (TOut *)moveToGPU((uint8_t *)k.c, memSz, s);
-    TOut *d_d1 = (TOut *)moveToGPU((uint8_t *)k.d1, memSz, s);
-    TOut *d_d2 = (TOut *)moveToGPU((uint8_t *)k.d2, memSz, s);
+    TOut *d_a = (TOut *)moveToGPU((uint8_t *)k.a, memSz, s, OpType);
+    TOut *d_b = (TOut *)moveToGPU((uint8_t *)k.b, memSz, s, OpType);
+    TOut *d_c = (TOut *)moveToGPU((uint8_t *)k.c, memSz, s, OpType);
+    TOut *d_d1 = (TOut *)moveToGPU((uint8_t *)k.d1, memSz, s, OpType);
+    TOut *d_d2 = (TOut *)moveToGPU((uint8_t *)k.d2, memSz, s, OpType);
     // printf("Doing select\n");
+
+    auto start = std::chrono::high_resolution_clock::now();
+
     selectKernel<TIn, TOut, p, q><<<(k.N - 1) / 256 + 1, 256>>>(d_x, d_Y, d_a, d_b, d_c, d_d1, d_d2, party, k.N, bw);
     checkCudaErrors(cudaDeviceSynchronize());
+
+    auto end = std::chrono::high_resolution_clock::now();
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
     // printf("finished kernel\n");
     if (opMasked)
-        peer->reconstructInPlace(d_a, bw, k.N, s);
+        peer->reconstructInPlace(d_a, bw, k.N, s, OpType);
 
     // gpuFree(d_a);
     gpuFree(d_b);

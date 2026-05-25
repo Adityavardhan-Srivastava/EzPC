@@ -22,6 +22,7 @@
 #include "gpu_softmax.h"
 #include "gpu_avgpool.h"
 #include "gpu_truncate.h"
+#include <chrono>
 
 template <typename T>
 __global__ void expandLtMatrixKernel(int N, int imgH, int imgW, T *ltA, T *A, T c)
@@ -98,7 +99,7 @@ T *gpuKeygenSoftmax(u8 **key_as_bytes, int party, MaxpoolParams p, T *d_mask_X, 
 }
 
 template <typename T>
-T *gpuSoftmax(SigmaPeer *peer, int party, MaxpoolParams p, GPUSoftMaxKey<T> k, T *d_X, T *d_nExpMsbTab, T *d_nExpLsbTab, T *d_invTab, AESGlobalContext *gaes, Stats *s)
+T *gpuSoftmax(SigmaPeer *peer, int party, MaxpoolParams p, GPUSoftMaxKey<T> k, T *d_X, T *d_nExpMsbTab, T *d_nExpLsbTab, T *d_invTab, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     u64 b0 = peer->bytesSent() + peer->bytesReceived();
     // need to make sure that this works for N > 1
@@ -111,18 +112,18 @@ T *gpuSoftmax(SigmaPeer *peer, int party, MaxpoolParams p, GPUSoftMaxKey<T> k, T
     p.bin = p.bin + 1;
     auto start = std::chrono::high_resolution_clock::now();
     // doesn't assume anything about a gap
-    auto d_max = gpuMaxpool(peer, party, p, k.maxPoolKey, d_X, gaes, s);
+    auto d_max = gpuMaxpool(peer, party, p, k.maxPoolKey, d_X, gaes, s, OpType);
     assert(p.strideH == p.FH && p.strideW == p.FW);
     auto d_X1 = windowFunc<T, xPlusM<u64(-1), u64(1)>>(party, p, d_X, d_max);
     gpuFree(d_max);
     // need a +1 slack for nExp for the first clip (which computes drelu(x - 2^16))
-    auto d_expX1 = gpuNExp(peer, party, ogBw, reducedBw, p.scale, inSz, k.nExpKey, d_X1, d_nExpMsbTab, d_nExpLsbTab, gaes, s);
+    auto d_expX1 = gpuNExp(peer, party, ogBw, reducedBw, p.scale, inSz, k.nExpKey, d_X1, d_nExpMsbTab, d_nExpLsbTab, gaes, s, OpType);
     gpuFree(d_X1);
     p.bw = ogBw;
     auto d_sumExpX1 = gpuAddPool(p, d_expX1, NULL);
-    auto d_sumExpX1Inv = gpuLUTInverse(peer, party, p.bw, p.scale + int(ceil(log2(p.FW))), p.scale, mSz, k.invKey, d_sumExpX1, d_invTab, gaes, s);
+    auto d_sumExpX1Inv = gpuLUTInverse(peer, party, p.bw, p.scale + int(ceil(log2(p.FW))), p.scale, mSz, k.invKey, d_sumExpX1, d_invTab, gaes, s, OpType);
     gpuFree(d_sumExpX1);
-    auto d_softmax = windowMul(peer, party, p, k.wMulKey, d_expX1, d_sumExpX1Inv, TruncateType::TrWithSlack, gaes, s);
+    auto d_softmax = windowMul<u64>(peer, party, p, k.wMulKey, d_expX1, d_sumExpX1Inv, TruncateType::TrWithSlack, gaes, s, nullptr, OpType);
     gpuFree(d_expX1);
     gpuFree(d_sumExpX1Inv);
     if (p.isLowerTriangular)

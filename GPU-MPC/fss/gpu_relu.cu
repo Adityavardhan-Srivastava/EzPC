@@ -104,12 +104,12 @@ TOut *gpuGenReluKey(uint8_t **key_as_bytes, int party, int bin, int bout, int N,
 
 // Relu(x-p) + q, where x-p is guaranteed to be small
 template <typename TIn, typename TOut, u64 p, u64 q, bool flipDRelu>
-TOut *gpuRelu(SigmaPeer *peer, int party, GPUReluKey<TOut> &k, TIn *d_I, AESGlobalContext *gaes, Stats *s)
+TOut *gpuRelu(SigmaPeer *peer, int party, GPUReluKey<TOut> &k, TIn *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     auto &dreluKey = k.dreluKey;
     std::vector<u32 *> h_mask({dreluKey.mask});
-    auto d_drelu = gpuDcf<TIn, 1, dReluPrologue<p>, dReluEpilogue<p, flipDRelu>>(dreluKey.dpfKey, party, d_I, gaes, s, &h_mask);
-    peer->reconstructInPlace(d_drelu, 1, k.numRelus, s);
-    auto d_relu = gpuSelect<TIn, TOut, p, q>(peer, party, k.bout, k.selectKey, (u32 *)d_drelu, d_I, s);
+    auto d_drelu = gpuDcf<TIn, 1, dReluPrologue<p>, dReluEpilogue<p, flipDRelu>>(dreluKey.dpfKey, party, d_I, gaes, s, &h_mask, OpType);
+    peer->reconstructInPlace(d_drelu, 1, k.numRelus, s, OpType);
+    auto d_relu = gpuSelect<TIn, TOut, p, q>(peer, party, k.bout, k.selectKey, (u32 *)d_drelu, d_I, s, true, OpType);
     return d_relu;
 }

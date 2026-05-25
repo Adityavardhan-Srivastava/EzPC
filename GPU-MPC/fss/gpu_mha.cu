@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cassert>
 #include <cmath>
+#include <chrono>
 
 #include "gpu_mha.h"
 
@@ -82,16 +83,31 @@ T *gpuKeygenRotEmb(u8 **key_as_bytes, int party, int bw, int scale, MHAParams pM
 }
 
 template <typename T>
-T *gpuRotEmb(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, GPUTruncateKey<T> trKey, T *d_X, AESGlobalContext *g, Stats *s)
+T *gpuRotEmb(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, GPUTruncateKey<T> trKey, T *d_X, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
     u64 b0 = peer->bytesSent() + peer->bytesReceived();
 
     size_t size_X = pMHA.n_heads * (u64)pMHA.n_seq * pMHA.dim_W;
     auto d_X1 = (T *)gpuMalloc(size_X * sizeof(T));
+    auto start = std::chrono::high_resolution_clock::now();
     rotEmbKernel<<<(size_X - 1) / 128 + 1, 128>>>(pMHA, bw, scale, size_X, d_X, d_X1);
     // don't free this because QKV is one long array
     // gpuFree(d_X);
-    auto d_truncated_X = gpuTruncate<T, T>(bw, bw, TruncateType::TrWithSlack, trKey, scale - 3, peer, party, size_X, d_X1, g, s); //, true);
+    checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
+
+    auto d_truncated_X = gpuTruncate<T, T>(bw, bw, TruncateType::TrWithSlack, trKey, scale - 3, peer, party, size_X, d_X1, g, s, OpType); //, true);
     gpuFree(d_X1);
 
     u64 b1 = peer->bytesSent() + peer->bytesReceived();
@@ -148,11 +164,11 @@ T *gpuKeygenMHA(u8 **key_as_bytes, int party, int bw, int scale, MHAParams pMHA,
 }
 
 template <typename T>
-T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulParams pMHAMul, GPUMHAKey<T> k, T *WQKV, T *YQKV, T *WProj, T *YProj, T *d_X, MHATables<T> t, AESGlobalContext *g, Stats *s)
+T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulParams pMHAMul, GPUMHAKey<T> k, T *WQKV, T *YQKV, T *WProj, T *YProj, T *d_X, MHATables<T> t, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
     auto b0 = peer->bytesSent() + peer->bytesReceived();
 
-    auto d_QKV = gpuMatmul(peer, party, pMHAMul.pQKV, k.mmKeyQKV, d_X, WQKV, YQKV, TruncateType::TrFloor, g, s);
+    auto d_QKV = gpuMatmul<u64>(peer, party, pMHAMul.pQKV, k.mmKeyQKV, d_X, WQKV, YQKV, TruncateType::TrFloor, g, s, false, nullptr, 1);
     // this->activation.d_data = d_QKV;
     size_t QKSz = pMHAMul.pQKV.size_C / 3;
     auto d_Q = d_QKV;
@@ -162,11 +178,11 @@ T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulP
 
     if (pMHA.rotEmb)
     {
-        d_Q = gpuRotEmb(peer, party, bw, scale, pMHA, k.reQTrKey, d_Q, g, s);
-        d_K = gpuRotEmb(peer, party, bw, scale, pMHA, k.reKTrKey, d_K, g, s);
+        d_Q = gpuRotEmb(peer, party, bw, scale, pMHA, k.reQTrKey, d_Q, g, s, 3);
+        d_K = gpuRotEmb(peer, party, bw, scale, pMHA, k.reKTrKey, d_K, g, s, 3);
     }
 
-    auto d_QKt = gpuMatmul(peer, party, pMHAMul.pQKt, k.mmKeyQKt, d_Q, d_K, (T *)NULL, TruncateType::TrFloor, g, s, true);
+    auto d_QKt = gpuMatmul<u64>(peer, party, pMHAMul.pQKt, k.mmKeyQKt, d_Q, d_K, (T *)NULL, TruncateType::TrFloor, g, s, true, nullptr, 1);
     if (pMHA.rotEmb)
     {
         gpuFree(d_Q);
@@ -179,7 +195,8 @@ T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulP
     if (pMHA.doNormQKt && int(log2(pMHA.dim_W)) % 2 == 1)
     {
         T invSqrtDimW = T((1.0f / sqrt(double(pMHA.dim_W))) * (1LL << scale));
-        d_normQKt = gpuScalarMul(peer, party, bw, pMHAMul.pQKt.size_C, k.normQKtTrKey, invSqrtDimW, d_QKt, TruncateType::TrFloor, scale, g, s);
+        d_normQKt = gpuScalarMul(peer, party, bw, pMHAMul.pQKt.size_C, k.normQKtTrKey, invSqrtDimW, d_QKt, TruncateType::TrFloor, scale, g, s, 1);
+        // the above function also gets profiled as a part of the matmul for now
         gpuFree(d_QKt);
     }
 
@@ -188,14 +205,14 @@ T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulP
     // assert(d_invTab);
     // this->activation.d_data = d_normQKt;
 
-    auto d_smQKt = gpuSoftmax(peer, party, pMHAMul.pMPool, k.softmaxKey, d_normQKt, t.d_nExpMsbTab, t.d_nExpLsbTab, t.d_invTab, g, s);
+    auto d_smQKt = gpuSoftmax(peer, party, pMHAMul.pMPool, k.softmaxKey, d_normQKt, t.d_nExpMsbTab, t.d_nExpLsbTab, t.d_invTab, g, s, 2);
     gpuFree(d_normQKt);
     // this->activation.d_data = d_smQKt;
-    auto d_smQKtV = gpuMatmul(peer, party, pMHAMul.pSmQKtV, k.mmKeySmQKtV, d_smQKt, d_V, (T *)NULL, TruncateType::TrFloor, g, s, true);
+    auto d_smQKtV = gpuMatmul<u64>(peer, party, pMHAMul.pSmQKtV, k.mmKeySmQKtV, d_smQKt, d_V, (T *)NULL, TruncateType::TrFloor, g, s, true, nullptr, 1);
     gpuFree(d_smQKt);
     gpuFree(d_QKV);
     // // this->activation.d_data = d_smQKtV;
-    auto d_proj = gpuMatmul(peer, party, pMHAMul.pProj, k.mmKeyProj, d_smQKtV, WProj, YProj, TruncateType::TrFloor, g, s);
+    auto d_proj = gpuMatmul<u64>(peer, party, pMHAMul.pProj, k.mmKeyProj, d_smQKtV, WProj, YProj, TruncateType::TrFloor, g, s, false, nullptr, 1);
     gpuFree(d_smQKtV);
     auto b1 = peer->bytesSent() + peer->bytesReceived();
     return d_proj;

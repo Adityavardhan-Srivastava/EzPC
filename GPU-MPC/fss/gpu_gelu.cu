@@ -84,18 +84,18 @@ __global__ void geluMuxKernel(int party, int bin, int bout, int N, u32 *drelu_g,
 }
 
 template <typename TIn, typename TOut>
-TOut *geluMux(SigmaPeer *peer, int party, GPUGeluMuxKey<TOut> k, int bin, int bout, int N, u32 *d_drelu, u32 *d_ic, TIn *d_Xt, Stats *s)
+TOut *geluMux(SigmaPeer *peer, int party, GPUGeluMuxKey<TOut> k, int bin, int bout, int N, u32 *d_drelu, u32 *d_ic, TIn *d_Xt, Stats *s, int OpType = 0)
 {
     // assert(bout == 8);
     assert(bout <= 8 * sizeof(TOut));
     auto d_out = (TOut *)gpuMalloc(N * sizeof(TOut));
     u64 memSzC = 4 * N * sizeof(TOut);
-    auto d_c0 = (TOut *)moveToGPU((u8 *)k.c0, memSzC, s);
-    auto d_c1 = (TOut *)moveToGPU((u8 *)k.c1, memSzC, s);
+    auto d_c0 = (TOut *)moveToGPU((u8 *)k.c0, memSzC, s, OpType);
+    auto d_c1 = (TOut *)moveToGPU((u8 *)k.c1, memSzC, s, OpType);
     geluMuxKernel<TIn, TOut><<<(N - 1) / 128 + 1, 128>>>(party, bin, bout, N, d_drelu, d_ic, d_Xt, d_out, d_c0, d_c1);
     gpuFree(d_c0);
     gpuFree(d_c1);
-    peer->reconstructInPlace(d_out, bout, N, s);
+    peer->reconstructInPlace(d_out, bout, N, s, OpType);
     return d_out;
 }
 
@@ -129,30 +129,30 @@ T *gpuKeyGenGelu(uint8_t **key_as_bytes, int party, int bw, int bin, int scale, 
 
 // clip happens in place
 template <typename T, typename TClip, int clipBw>
-T *gpuGelu(SigmaPeer *peer, int party, GPUGeluKey<T, TClip> &k, int bw, int bin, int scale, int N, T *d_X, T *d_geluSubRelu, AESGlobalContext *gaes, Stats *s)
+T *gpuGelu(SigmaPeer *peer, int party, GPUGeluKey<T, TClip> &k, int bw, int bin, int scale, int N, T *d_X, T *d_geluSubRelu, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     assert(8 * sizeof(TClip) >= clipBw);
     assert(bin > scale - 6);
     int bwXt = bin - scale + 6 + 1;
     // do a truncate reduce
-    auto d_Xt = gpuTruncate(bw, bwXt, TruncateType::TrWithSlack, k.trKey, scale - 6, peer, party, N, d_X, gaes, s);
+    auto d_Xt = gpuTruncate(bw, bwXt, TruncateType::TrWithSlack, k.trKey, scale - 6, peer, party, N, d_X, gaes, s, OpType);
     // the -1 doesn't matter because anything larger is anyway set to (1 << clipBw) - 1
     const u64 clipVal = (1ULL << clipBw) - 1;
     std::vector<u32 *> h_masks({k.dReluKey.mask, k.icMask});
-    u32 *d_res = gpuDcf<T, 3, geluPrologue<clipVal, -clipVal>, geluEpilogue<clipVal, -clipVal>>(k.dReluKey.dpfKey, party, d_Xt, gaes, s, &h_masks);
+    u32 *d_res = gpuDcf<T, 3, geluPrologue<clipVal, -clipVal>, geluEpilogue<clipVal, -clipVal>>(k.dReluKey.dpfKey, party, d_Xt, gaes, s, &h_masks, OpType);
     int numInts = ((N - 1) / PACKING_SIZE + 1);
-    peer->reconstructInPlace(d_res, 1, 2 * numInts * 32, s);
+    peer->reconstructInPlace(d_res, 1, 2 * numInts * 32, s, OpType);
 
     u32 *d_dRelu = d_res;
     u32 *d_ic = d_res + numInts;
-    auto d_clippedX = geluMux<T, TClip>(peer, party, k.muxKey, bwXt, clipBw, N, d_dRelu, d_ic, d_Xt, s);
+    auto d_clippedX = geluMux<T, TClip>(peer, party, k.muxKey, bwXt, clipBw, N, d_dRelu, d_ic, d_Xt, s, OpType);
     gpuFree(d_Xt);
-    auto d_reluSubGelu = gpuDpfLUT<TClip, T>(k.lutKey, peer, party, d_clippedX, d_geluSubRelu, gaes, s, false);
+    auto d_reluSubGelu = gpuDpfLUT<TClip, T>(k.lutKey, peer, party, d_clippedX, d_geluSubRelu, gaes, s, false, OpType);
     gpuFree(d_clippedX);
-    T *d_relu = gpuSelect<T, T, 0, 0>(peer, party, bw, k.reluSelectKey, d_dRelu, d_X, s, false);
+    T *d_relu = gpuSelect<T, T, 0, 0>(peer, party, bw, k.reluSelectKey, d_dRelu, d_X, s, false, OpType);
     gpuFree(d_res);
     gpuLinearComb(bw, N, d_relu, T(1), d_relu, -T(1), d_reluSubGelu);
     gpuFree(d_reluSubGelu);
-    peer->reconstructInPlace(d_relu, bw, N, s);
+    peer->reconstructInPlace(d_relu, bw, N, s, OpType);
     return d_relu;
 }

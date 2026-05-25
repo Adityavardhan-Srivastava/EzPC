@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <omp.h>
 #include <unistd.h>
+#include <chrono>
 
 #include "gpu_data_types.h"
 #include "gpu_mem.h"
@@ -104,11 +105,25 @@ void gpuLinearComb(int bw, int N, T *d_O, Arguments... args)
 }
 
 template <typename T>
-void gpuXor(T *d_A, T *d_B, int N, Stats *s)
+void gpuXor(T *d_A, T *d_B, int N, Stats *s, int OpType = 0)
 {
     const int thread_block_size = 128;
+    auto start = std::chrono::high_resolution_clock::now();
     xorKernel<<<(N - 1) / thread_block_size + 1, thread_block_size>>>(d_A, d_B, N);
     checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = end - start;
+    if (s){
+        s->compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 2: s->mha_softmax_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 3: s->mha_rot_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 4: s->layernorm_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 5: s->dcf_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+        }
+    }
 }
 
 void writeInt(u8 **key_as_bytes, int N)
@@ -130,11 +145,24 @@ __global__ void unmaskKernel(int bw, int N, T *A, T *mask_A)
 }
 
 template <typename T>
-void unmaskValues(int bw, int N, T *d_A, T *h_mask_A, Stats *s)
+void unmaskValues(int bw, int N, T *d_A, T *h_mask_A, Stats *s, int OpType = 0)
 {
-    auto d_mask_A = (T *)moveToGPU((u8 *)h_mask_A, N * sizeof(T), s);
+    auto d_mask_A = (T *)moveToGPU((u8 *)h_mask_A, N * sizeof(T), s, OpType);
+    auto start = std::chrono::high_resolution_clock::now();
     unmaskKernel<<<(N - 1) / 256 + 1, 256>>>(bw, N, d_A, d_mask_A);
     checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = end - start;
+    if (s)    {
+        s->compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 2: s->mha_softmax_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 3: s->mha_rot_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 4: s->layernorm_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+            case 5: s->dcf_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count(); break;
+        }
+    }
     gpuFree(d_mask_A);
     // return d_A;
 }

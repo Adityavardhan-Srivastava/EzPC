@@ -164,11 +164,11 @@ namespace dcf
 
     // no memory leak
     template <typename T>
-    void gpuSelectForTruncate(int party, int N, T *d_I, u32 *d_maskedDcfBit, T *h_outMask, T *h_p, Stats *s)
+    void gpuSelectForTruncate(int party, int N, T *d_I, u32 *d_maskedDcfBit, T *h_outMask, T *h_p, Stats *s, int OpType = 0)
     {
         size_t memSz = N * sizeof(T);
-        auto d_outMask = (T *)moveToGPU((u8 *)h_outMask, memSz, s);
-        auto d_p = (T *)moveToGPU((u8 *)h_p, 2 * memSz, s);
+        auto d_outMask = (T *)moveToGPU((u8 *)h_outMask, memSz, s, OpType);
+        auto d_p = (T *)moveToGPU((u8 *)h_p, 2 * memSz, s, OpType);
         selectForTruncateKernel<T><<<(N - 1) / 128 + 1, 128>>>(d_I, d_maskedDcfBit, d_outMask, d_p, N, party);
         checkCudaErrors(cudaDeviceSynchronize());
         gpuFree(d_outMask);
@@ -177,14 +177,14 @@ namespace dcf
 
     // no memory leaks
     template <typename T>
-    void gpuSignExtend(GPUSignExtendKey<T> k, int party, SigmaPeer *peer, T *d_I, AESGlobalContext *g, Stats *s)
+    void gpuSignExtend(GPUSignExtendKey<T> k, int party, SigmaPeer *peer, T *d_I, AESGlobalContext *g, Stats *s, int OpType = 0)
     {
         gpuLinearComb(k.bin, k.N, d_I, T(1), d_I, T(1ULL << (k.bin - 1)));
         std::vector<u32 *> h_dcfMask = {k.dcfKey.dReluMask};
-        auto d_maskedDcfBit = dcf::gpuDcf<T, 1, dcf::idPrologue, dcf::maskEpilogue>(k.dcfKey.dcfKey, party, d_I, g, s, &h_dcfMask);
-        peer->reconstructInPlace(d_maskedDcfBit, 1, k.N, s);
-        gpuSelectForTruncate(party, k.N, d_I, d_maskedDcfBit, k.t, k.p, s);
-        peer->reconstructInPlace(d_I, k.bout, k.N, s);
+        auto d_maskedDcfBit = dcf::gpuDcf<T, 1, dcf::idPrologue, dcf::maskEpilogue>(k.dcfKey.dcfKey, party, d_I, g, s, &h_dcfMask, OpType);
+        peer->reconstructInPlace(d_maskedDcfBit, 1, k.N, s, OpType);
+        gpuSelectForTruncate(party, k.N, d_I, d_maskedDcfBit, k.t, k.p, s, OpType);
+        peer->reconstructInPlace(d_I, k.bout, k.N, s, OpType);
         gpuFree(d_maskedDcfBit);
     }
 
@@ -201,40 +201,40 @@ namespace dcf
     }
 
     template <typename T>
-    void gpuStochasticTR(GPUStTRKey<T> k, int party, SigmaPeer *peer, T *d_I, AESGlobalContext *g, Stats *s)
+    void gpuStochasticTR(GPUStTRKey<T> k, int party, SigmaPeer *peer, T *d_I, AESGlobalContext *g, Stats *s, int OpType = 0)
     {
         std::vector<u32 *> h_mask = {k.lsbKey.dReluMask};
-        auto d_dcf = dcf::gpuDcf<T, 1, idPrologue, maskEpilogue>(k.lsbKey.dcfKey, party, d_I, g, s, &h_mask);
-        peer->reconstructInPlace(d_dcf, 1, k.N, s);
-        auto d_lsbCorr = (T *)moveToGPU((u8 *)k.lsbCorr, 2 * k.N * sizeof(T), s);
+        auto d_dcf = dcf::gpuDcf<T, 1, idPrologue, maskEpilogue>(k.lsbKey.dcfKey, party, d_I, g, s, &h_mask, OpType);
+        peer->reconstructInPlace(d_dcf, 1, k.N, s, OpType);
+        auto d_lsbCorr = (T *)moveToGPU((u8 *)k.lsbCorr, 2 * k.N * sizeof(T), s, OpType);
         stochasticTRKernel<<<(k.N - 1) / 128 + 1, 128>>>(party, k.bin, k.bout, k.shift, k.N, d_I, d_dcf, d_lsbCorr);
-        peer->reconstructInPlace(d_I, k.bout, k.N, s);
+        peer->reconstructInPlace(d_I, k.bout, k.N, s, OpType);
         gpuFree(d_dcf);
         gpuFree(d_lsbCorr);
     }
 
     template <typename T>
-    void gpuStochasticTruncate(GPUTruncateKey<T> k, int party, SigmaPeer *peer, T *d_I, AESGlobalContext *g, Stats *s)
+    void gpuStochasticTruncate(GPUTruncateKey<T> k, int party, SigmaPeer *peer, T *d_I, AESGlobalContext *g, Stats *s, int OpType = 0)
     {
-        gpuStochasticTR(k.stTRKey, party, peer, d_I, g, s);
-        gpuSignExtend(k.signExtendKey, party, peer, d_I, g, s);
+        gpuStochasticTR(k.stTRKey, party, peer, d_I, g, s, OpType);
+        gpuSignExtend(k.signExtendKey, party, peer, d_I, g, s, OpType);
     }
 
     template <typename T>
-    void gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<T> k, int shift, SigmaPeer *peer, int party, int N, T *d_I, AESGlobalContext *gaes, Stats *s)
+    void gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<T> k, int shift, SigmaPeer *peer, int party, int N, T *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
     {
         switch (t)
         {
         case TruncateType::StochasticTR:
             // assert(bout == bin - shift);
             bout = bin - shift;
-            gpuStochasticTR(k.stTRKey, party, peer, d_I, gaes, s);
+            gpuStochasticTR(k.stTRKey, party, peer, d_I, gaes, s, OpType);
             break;
         case TruncateType::LocalARS:
             gpuLocalTr<T, T, ars>(party, bin, shift, N, d_I, true);
             break;
         case TruncateType::StochasticTruncate:
-            gpuStochasticTruncate(k, party, peer, d_I, gaes, s);
+            gpuStochasticTruncate(k, party, peer, d_I, gaes, s, OpType);
             break;
         default:
             assert(t == TruncateType::None);

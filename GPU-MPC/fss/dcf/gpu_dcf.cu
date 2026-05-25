@@ -142,7 +142,7 @@ namespace dcf
 
     // no memory leak
     template <typename T, int E, dcfPrologue pr, dcfEpilogue ep>
-    void gpuDcfTreeEval(GPUDCFTreeKey k, int party, T *d_in, u32 *d_out, u64 oStride, AESGlobalContext *g, Stats *s)
+    void gpuDcfTreeEval(GPUDCFTreeKey k, int party, T *d_in, u32 *d_out, u64 oStride, AESGlobalContext *g, Stats *s, int OpType = 0)
     {
         // do not change tb size it is needed to load the sbox
         const int tb_size = 256;
@@ -150,35 +150,47 @@ namespace dcf
         AESBlock *d_scw, *d_l;
         u32 *d_vcw;
 
-        d_scw = (AESBlock *)moveToGPU((u8 *)k.scw, k.memSzScw, s);
-        d_vcw = (u32 *)moveToGPU((u8 *)k.vcw, k.memSzVcw, s);
-        d_l = (AESBlock *)moveToGPU((u8 *)k.l, k.memSzL, s);
-
+        d_scw = (AESBlock *)moveToGPU((u8 *)k.scw, k.memSzScw, s, OpType);
+        d_vcw = (u32 *)moveToGPU((u8 *)k.vcw, k.memSzVcw, s, OpType);
+        d_l = (AESBlock *)moveToGPU((u8 *)k.l, k.memSzL, s, OpType);
+        auto start = std::chrono::high_resolution_clock::now();
         doDcf<T, E, pr, ep><<<num_thread_blocks, tb_size>>>(k.bin, k.bout, party, k.N, d_in, d_scw, d_vcw, d_l, d_out, oStride, *g);
 
         checkCudaErrors(cudaDeviceSynchronize());
+        auto end = std::chrono::high_resolution_clock::now();
+        if (s) {
+            uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+            s->compute_time += elapsed; 
+            switch (OpType) {
+                case 1: s->mha_matmul_compute_time += elapsed; break;
+                case 2: s->mha_softmax_compute_time += elapsed; break;
+                case 3: s->mha_rot_compute_time += elapsed; break;
+                case 4: s->layernorm_compute_time += elapsed; break;
+                case 5: s->dcf_compute_time += elapsed; break;
+            }
+        }
         gpuFree(d_scw);
         gpuFree(d_l);
         gpuFree(d_vcw);
     }
 
     template <typename T, int E, dcfPrologue pr, dcfEpilogue ep>
-    u32 *gpuDcf(GPUDCFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std::vector<u32 *> *h_masks = NULL)
+    u32 *gpuDcf(GPUDCFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std::vector<u32 *> *h_masks = NULL, int OpType = 0)
     {
         u32 *d_out;
         if (k.bin <= 8)
         {
-            d_out = dcf::gpuLookupSSTable<T, E, pr, ep>(k.ssKey, party, d_in, s, h_masks);
+            d_out = dcf::gpuLookupSSTable<T, E, pr, ep>(k.ssKey, party, d_in, s, h_masks, OpType);
         }
         else
         {
-            d_out = moveMasks(k.memSzOut, h_masks, s);
+            d_out = moveMasks(k.memSzOut, h_masks, s, OpType);
             size_t gIntSzOut = k.memSzOut / sizeof(PACK_TYPE);
             int n = k.dcfTreeKey[0].N;
             size_t bIntSzOut = k.dcfTreeKey[0].memSzOut / sizeof(PACK_TYPE);
             for (int b = 0; b < k.B; b++)
             {
-                gpuDcfTreeEval<T, E, pr, ep>(k.dcfTreeKey[b], party, d_in + b * n, d_out + b * bIntSzOut, (u64)gIntSzOut, g, s);
+                gpuDcfTreeEval<T, E, pr, ep>(k.dcfTreeKey[b], party, d_in + b * n, d_out + b * bIntSzOut, (u64)gIntSzOut, g, s, OpType);
             }
         }
         return d_out;

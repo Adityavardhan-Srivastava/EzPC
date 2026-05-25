@@ -50,12 +50,12 @@ namespace dcf
     }
 
     template <typename T>
-    std::pair<u32 *, T *> gpuTwoRoundRelu(SigmaPeer *peer, int party, GPU2RoundReLUKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s)
+    std::pair<u32 *, T *> gpuTwoRoundRelu(SigmaPeer *peer, int party, GPU2RoundReLUKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
     {
         std::vector<u32 *> h_dreluMask = {k.dreluKey.dReluMask};
-        auto d_drelu = gpuDcf<T, 2, dReluPrologue, dReluEpilogue<false>>(k.dreluKey.dcfKey, party, d_I, gaes, s, &h_dreluMask);
-        peer->reconstructInPlace(d_drelu, 1, k.N, s);
-        auto d_relu = gpuSelect<T, T, 0, 0>(peer, party, k.bout, k.selectKey, (u32 *)d_drelu, d_I, s, true);
+        auto d_drelu = gpuDcf<T, 2, dReluPrologue, dReluEpilogue<false>>(k.dreluKey.dcfKey, party, d_I, gaes, s, &h_dreluMask, OpType);
+        peer->reconstructInPlace(d_drelu, 1, k.N, s, OpType);
+        auto d_relu = gpuSelect<T, T, 0, 0>(peer, party, k.bout, k.selectKey, (u32 *)d_drelu, d_I, s, true, OpType);
         return std::make_pair(d_drelu, d_relu);
     }
 
@@ -85,11 +85,11 @@ namespace dcf
     template <typename T>
     T* gpuReluExtendMux(int party, int bin, int N,
                               T *d_I, T *h_oneHot, T *h_outMask, u32 *d_drelu,
-                              u32 *d_xLTRin, Stats *s)
+                              u32 *d_xLTRin, Stats *s, int OpType = 0)
     {
         auto d_out = (T*) gpuMalloc(N * sizeof(T));
-        auto d_oneHot = (T *)moveToGPU((uint8_t *)h_oneHot, 4 * N * sizeof(T), s);
-        auto d_outMask = (T *)moveToGPU((uint8_t *)h_outMask, 2 * N * sizeof(T), s);
+        auto d_oneHot = (T *)moveToGPU((uint8_t *)h_oneHot, 4 * N * sizeof(T), s, OpType);
+        auto d_outMask = (T *)moveToGPU((uint8_t *)h_outMask, 2 * N * sizeof(T), s, OpType);
         reluExtendMuxKernel<<<(N - 1) / 128 + 1, 128>>>(party, bin, N, d_I, d_out, d_oneHot, d_outMask, d_drelu, d_xLTRin);
         checkCudaErrors(cudaDeviceSynchronize());
         gpuFree(d_oneHot);
@@ -153,16 +153,16 @@ namespace dcf
     }
 
     template <typename T>
-    std::pair<u32 *, T *> gpuReluExtend(SigmaPeer *peer, int party, GPUReluExtendKey<T> k, T *d_I, AESGlobalContext *g, Stats *s)
+    std::pair<u32 *, T *> gpuReluExtend(SigmaPeer *peer, int party, GPUReluExtendKey<T> k, T *d_I, AESGlobalContext *g, Stats *s, int OpType = 0)
     {
         // printf("%d, %d, %d\n", k.bin, k.bout, k.N);
         std::vector<u32 *> h_masks = {k.dReluKey.dReluMask, k.dcfMask};
-        auto d_dcf = gpuDcf<T, 2, dReluPrologue, dReluEpilogue<true>>(k.dReluKey.dcfKey, party, d_I, g, s, &h_masks);
-        peer->reconstructInPlace(d_dcf, 2, 2 * k.dReluKey.dcfKey.memSzOut * 4, s);
+        auto d_dcf = gpuDcf<T, 2, dReluPrologue, dReluEpilogue<true>>(k.dReluKey.dcfKey, party, d_I, g, s, &h_masks, OpType);
+        peer->reconstructInPlace(d_dcf, 2, 2 * k.dReluKey.dcfKey.memSzOut * 4, s, OpType);
         auto d_drelu = d_dcf;
         auto d_xLTRin = (u32 *)(((u8 *)d_dcf) + k.dReluKey.dcfKey.memSzOut);
-        auto d_relu = gpuReluExtendMux(party, k.bin, k.N, d_I, k.oneHot, k.outMask, d_drelu, d_xLTRin, s);
-        peer->reconstructInPlace(d_relu, k.bout, k.N, s);
+        auto d_relu = gpuReluExtendMux(party, k.bin, k.N, d_I, k.oneHot, k.outMask, d_drelu, d_xLTRin, s, OpType);
+        peer->reconstructInPlace(d_relu, k.bout, k.N, s, OpType);
         return std::make_pair(d_drelu, d_relu);
     }
 }

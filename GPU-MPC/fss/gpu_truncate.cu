@@ -20,6 +20,7 @@
 // SOFTWARE.
 
 #pragma once
+#include <chrono>
 
 #include <cassert>
 
@@ -205,60 +206,77 @@ TOut *genGPUTruncateKey(uint8_t **key_as_bytes, int party, TruncateType t, int b
 }
 
 template <typename TIn, typename TOut, trFunc<TIn, TOut> tf>
-TOut *gpuTrHelper(int party, SigmaPeer *peer, int bin, int shift, int bout, int N, GPUTrCorrKey<TOut> k, TIn *d_X, AESGlobalContext *g, Stats *s, u8 *d_bytes = NULL)
+TOut *gpuTrHelper(int party, SigmaPeer *peer, int bin, int shift, int bout, int N, GPUTrCorrKey<TOut> k, TIn *d_X, AESGlobalContext *g, Stats *s, u8 *d_bytes = NULL, int OpType = 0)
 {
     // printf("%d, %d, %d, %d, %d, %d\n", bin, shift, bout, N, k.mDpfKey.dpfKey.bin, k.mDpfKey.dpfKey.N);
     std::vector<u32 *> mask({k.mDpfKey.mask});
     // get a masked dcf as output
-    auto d_b = gpuDcf<TIn, 1, idPrologue, maskEpilogue>(k.mDpfKey.dpfKey, party, d_X, g, s, &mask);
-    peer->reconstructInPlace(d_b, 1, N, s);
+    auto d_b = gpuDcf<TIn, 1, idPrologue, maskEpilogue>(k.mDpfKey.dpfKey, party, d_X, g, s, &mask, OpType);
+    peer->reconstructInPlace(d_b, 1, N, s, OpType);
     size_t memSz = N * sizeof(TOut);
-    auto d_corr = (TOut *)moveToGPU((u8 *)k.corr, 2 * memSz, s);
+    auto d_corr = (TOut *)moveToGPU((u8 *)k.corr, 2 * memSz, s, OpType);
     auto d_O = (TOut *)gpuMalloc(memSz);
+
+    auto start = std::chrono::high_resolution_clock::now();
     trCorrKernel<TIn, TOut, tf><<<(N - 1) / 128 + 1, 128>>>(party, bin, shift, bout, N, d_X, d_b, d_corr, d_O, d_bytes);
     checkCudaErrors(cudaDeviceSynchronize());
+
+    auto end = std::chrono::high_resolution_clock::now();
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
+
     gpuFree(d_corr);
     gpuFree(d_b);
 
-    peer->reconstructInPlace(d_O, bout, N, s);
+    peer->reconstructInPlace(d_O, bout, N, s, OpType);
 
     return d_O;
 }
 
 template <typename TIn, typename TOut>
-TOut *gpuSignExtend(int party, SigmaPeer *peer, int bin, int bout, int N, GPUTrCorrKey<TOut> k, TIn *d_X, AESGlobalContext *g, Stats *s)
+TOut *gpuSignExtend(int party, SigmaPeer *peer, int bin, int bout, int N, GPUTrCorrKey<TOut> k, TIn *d_X, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
     auto d_Y = (TIn *)gpuMalloc(N * sizeof(TOut));
     gpuLinearComb(bin, N, d_Y, TIn(1), d_X, TIn(1ULL << (bin - 1)));
-    auto d_O = gpuTrHelper<TIn, TOut, signExtend<TIn, TOut>>(party, peer, bin, 0, bout, N, k, d_Y, g, s);
+    auto d_O = gpuTrHelper<TIn, TOut, signExtend<TIn, TOut>>(party, peer, bin, 0, bout, N, k, d_Y, g, s, NULL, OpType);
     gpuFree(d_Y);
     return d_O;
 }
 
 template <typename TIn, typename TOut>
-TOut *gpuTrFloor(GPUTruncateKey<TOut> k, int party, SigmaPeer *peer, TIn *d_X, AESGlobalContext *g, Stats *s)
+TOut *gpuTrFloor(GPUTruncateKey<TOut> k, int party, SigmaPeer *peer, TIn *d_X, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
-    auto d_trX = gpuTrHelper<TIn, TOut, trReduce<TIn, TOut>>(party, peer, k.bin, k.shift, k.bin - k.shift, k.N, k.lsbKey, d_X, g, s);
+    auto d_trX = gpuTrHelper<TIn, TOut, trReduce<TIn, TOut>>(party, peer, k.bin, k.shift, k.bin - k.shift, k.N, k.lsbKey, d_X, g, s, NULL, OpType);
     auto d_O = d_trX;
     if (k.bout > k.bin - k.shift)
     {
-        d_O = gpuSignExtend<TOut, TOut>(party, peer, k.bin - k.shift, k.bout, k.N, k.msbKey, d_trX, g, s);
+        d_O = gpuSignExtend<TOut, TOut>(party, peer, k.bin - k.shift, k.bout, k.N, k.msbKey, d_trX, g, s, OpType);
         gpuFree(d_trX);
     }
     return d_O;
 }
 
 template <typename TIn, typename TOut>
-TOut *gpuTrWithSlack(GPUTruncateKey<TOut> k, int party, SigmaPeer *peer, TIn *d_X, AESGlobalContext *g, Stats *s)
+TOut *gpuTrWithSlack(GPUTruncateKey<TOut> k, int party, SigmaPeer *peer, TIn *d_X, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
-    auto d_msbCorr = (u8 *)moveToGPU((u8 *)k.msbKey.corr, k.N * sizeof(TOut), s);
-    auto d_O = gpuTrHelper<TIn, TOut, trWithSlack>(party, peer, k.bin, k.shift, k.bout, k.N, k.lsbKey, d_X, g, s, (u8 *)d_msbCorr);
+    auto d_msbCorr = (u8 *)moveToGPU((u8 *)k.msbKey.corr, k.N * sizeof(TOut), s, OpType);
+    auto d_O = gpuTrHelper<TIn, TOut, trWithSlack>(party, peer, k.bin, k.shift, k.bout, k.N, k.lsbKey, d_X, g, s, (u8 *)d_msbCorr, OpType);
     gpuFree(d_msbCorr);
     return d_O;
 }
 
 template <typename TIn, typename TOut>
-TOut *gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<TOut> k, int shift, SigmaPeer *peer, int party, int N, TIn *d_I, AESGlobalContext *gaes, Stats *s)
+TOut *gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<TOut> k, int shift, SigmaPeer *peer, int party, int N, TIn *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     TOut *d_O;
     switch (t)
@@ -273,10 +291,10 @@ TOut *gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<TOut> k, int
         break;
     case TruncateType::TrWithSlack:
         // assert(bout > bin - shift);
-        d_O = gpuTrWithSlack(k, party, peer, d_I, gaes, s);
+        d_O = gpuTrWithSlack(k, party, peer, d_I, gaes, s, OpType);
         break;
     case TruncateType::TrFloor:
-        d_O = gpuTrFloor(k, party, peer, d_I, gaes, s);
+        d_O = gpuTrFloor(k, party, peer, d_I, gaes, s, OpType);
         break;
     case TruncateType::None:
         // static_assert(std::is_same<TIn, TOut>::value);

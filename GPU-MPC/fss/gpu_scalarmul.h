@@ -23,6 +23,7 @@
 
 #include "utils/gpu_data_types.h"
 #include "gpu_truncate.h"
+#include <chrono>
 
 // Z = aX, where a is a public scalar
 template <typename T>
@@ -37,12 +38,12 @@ T *gpuKeygenScalarMul(u8 **key_as_bytes, int party, int bw, int N, T a, T *d_mas
 }
 
 template <typename T>
-T *gpuScalarMul(SigmaPeer *peer, int party, int bw, int N, GPUTruncateKey<T> k, T a, T *d_X, TruncateType t, int shift, AESGlobalContext *gaes, Stats *s)
+T *gpuScalarMul(SigmaPeer *peer, int party, int bw, int N, GPUTruncateKey<T> k, T a, T *d_X, TruncateType t, int shift, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     u64 b0 = peer->bytesSent() + peer->bytesReceived();
     auto d_Z = (T *)gpuMalloc(N * sizeof(T));
     gpuLinearComb(bw, N, d_Z, a, d_X);
-    auto d_truncated_Z = gpuTruncate<T, T>(bw, bw, t, k, shift, peer, party, N, d_Z, gaes, s);
+    auto d_truncated_Z = gpuTruncate<T, T>(bw, bw, t, k, shift, peer, party, N, d_Z, gaes, s, OpType);
     if (d_truncated_Z != d_Z)
         gpuFree(d_Z);
     u64 b1 = peer->bytesSent() + peer->bytesReceived();

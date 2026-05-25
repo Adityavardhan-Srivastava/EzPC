@@ -109,7 +109,7 @@ __device__ void writeVCW(int bout, u32 *vcwArr, u64 vcw, int i, int N)
     }
 }
 
-u32 *moveMasks(u64 memSz, std::vector<u32 *> *h_masks, Stats *s)
+u32 *moveMasks(u64 memSz, std::vector<u32 *> *h_masks, Stats *s, int OpType = 0)
 {
     // assert(h_masks);
     u32 *d_out = NULL;
@@ -123,7 +123,7 @@ u32 *moveMasks(u64 memSz, std::vector<u32 *> *h_masks, Stats *s)
         for (int i = 0; i < h_masks->size(); i++)
         {
             // printf("Masks=%u\n", (*h_masks)[i][0]);
-            moveIntoGPUMem((u8 *)d_outTemp, (u8 *)(*h_masks)[i], memSz, s);
+            moveIntoGPUMem((u8 *)d_outTemp, (u8 *)(*h_masks)[i], memSz, s, OpType);
             d_outTemp += numInts;
         }
     }

@@ -19,6 +19,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include <chrono>
 #include "gpu_lut.h"
 #include "gpu_dpf.h"
 #include "utils/gpu_comms.h"
@@ -149,7 +150,7 @@ __global__ void dpfLUT(int party, int bin, int N, TIn *X, TOut *tab, AESBlock *s
 }
 
 template <typename TIn, typename TOut>
-TOut *gpuDpfLUT(GPULUTKey<TOut> k0, SigmaPeer *peer, int party, TIn *d_X, TOut *d_tab, AESGlobalContext *g, Stats *s, bool opMasked = true)
+TOut *gpuDpfLUT(GPULUTKey<TOut> k0, SigmaPeer *peer, int party, TIn *d_X, TOut *d_tab, AESGlobalContext *g, Stats *s, bool opMasked = true, int OpType = 0)
 {
     auto k = *(k0.k.dpfTreeKey);
     assert(k0.k.bin >= 8 && k0.k.B == 1);
@@ -163,15 +164,43 @@ TOut *gpuDpfLUT(GPULUTKey<TOut> k0, SigmaPeer *peer, int party, TIn *d_X, TOut *
 
     assert(k.memSzScw % (k.bin - LOG_AES_BLOCK_LEN) == 0);
 
-    d_scw = (AESBlock *)moveToGPU((uint8_t *)k.scw, k.memSzScw, s);
+    d_scw = (AESBlock *)moveToGPU((uint8_t *)k.scw, k.memSzScw, s, OpType);
     d_stack = (AESBlock *)gpuMalloc(k.memSzScw);
-    d_l0 = (AESBlock *)moveToGPU((uint8_t *)k.l0, k.memSzL, s);
-    d_l1 = (AESBlock *)moveToGPU((uint8_t *)k.l1, k.memSzL, s);
-    d_tR = (u32 *)moveToGPU((uint8_t *)k.tR, k.memSzT, s);
-    auto d_U = (u32 *)moveToGPU((u8 *)k0.maskU, k.memSzOut, s); // a lot of bits packed together
-    auto d_V = (TOut *)moveToGPU((u8 *)k0.s.b, k.N * sizeof(TOut), s);
+    d_l0 = (AESBlock *)moveToGPU((uint8_t *)k.l0, k.memSzL, s, OpType);
+    d_l1 = (AESBlock *)moveToGPU((uint8_t *)k.l1, k.memSzL, s, OpType);
+    d_tR = (u32 *)moveToGPU((uint8_t *)k.tR, k.memSzT, s, OpType);
+    auto d_U = (u32 *)moveToGPU((u8 *)k0.maskU, k.memSzOut, s, OpType); // a lot of bits packed together
+    auto d_V = (TOut *)moveToGPU((u8 *)k0.s.b, k.N * sizeof(TOut), s, OpType);
+
+    auto start = std::chrono::high_resolution_clock::now();
     dpfLUT<TIn, TOut><<<tb, tbSz /*, shmSize*/>>>(party, k.bin, k.N, d_X, d_tab, d_scw, d_stack, d_l0, d_l1, d_tR, d_U, d_V, *g);
     checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = end - start;
+    if (s)
+    {
+        s->compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+
+        // Update flag-specific stats using OpType to identify the operation
+        switch (OpType)
+        {        
+            case 1:
+                s->mha_matmul_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 2:
+                s->mha_softmax_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 3:
+                s->mha_rot_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 4:
+                s->layernorm_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 5:
+                s->dcf_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+        }
+    }
 
     gpuFree(d_scw);
     gpuFree(d_stack);
@@ -179,9 +208,9 @@ TOut *gpuDpfLUT(GPULUTKey<TOut> k0, SigmaPeer *peer, int party, TIn *d_X, TOut *
     gpuFree(d_l1);
     gpuFree(d_tR);
 
-    peer->reconstructInPlace(d_U, 1, k.N, s);
-    peer->reconstructInPlace(d_V, k0.bout, k.N, s);
-    auto d_O = gpuSelect<TOut, TOut, 0, 0>(peer, party, k0.bout, k0.s, d_U, d_V, s, opMasked);
+    peer->reconstructInPlace(d_U, 1, k.N, s, OpType);
+    peer->reconstructInPlace(d_V, k0.bout, k.N, s, OpType);
+    auto d_O = gpuSelect<TOut, TOut, 0, 0>(peer, party, k0.bout, k0.s, d_U, d_V, s, opMasked, OpType);
     gpuLinearComb(k0.bout, k.N, d_O, TOut(2), d_O, TOut(-1 * (opMasked || party == SERVER1)), d_V);
     gpuFree(d_U);
     gpuFree(d_V);

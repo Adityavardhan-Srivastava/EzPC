@@ -24,6 +24,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <chrono>
 
 #include "utils/gpu_data_types.h"
 #include "utils/helper_cuda.h"
@@ -234,22 +235,63 @@ __global__ void dpfTreeEval(int party, int bin, int N, T *in, AESBlock *scw,
 }
 
 template <typename T, treeTraversal t>
-void gpuDpfTreeEval(GPUDPFTreeKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, u32 *d_out, u64 oStride)
+void gpuDpfTreeEval(GPUDPFTreeKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, u32 *d_out, u64 oStride, int OpType = 0)
 {
     // auto d_out = moveMasks(k.memSzOut, h_masks, s);
     assert(k.memSzScw % (k.bin - LOG_AES_BLOCK_LEN) == 0);
 
-    AESBlock *d_scw = (AESBlock *)moveToGPU((u8 *)k.scw, k.memSzScw, s);
-    AESBlock *d_l0 = (AESBlock *)moveToGPU((u8 *)k.l0, k.memSzL, s);
-    AESBlock *d_l1 = (AESBlock *)moveToGPU((u8 *)k.l1, k.memSzL, s);
-    u32 *d_tR = (u32 *)moveToGPU((u8 *)k.tR, k.memSzT, s);
+    AESBlock *d_scw = (AESBlock *)moveToGPU((u8 *)k.scw, k.memSzScw, s, OpType);
+    AESBlock *d_l0 = (AESBlock *)moveToGPU((u8 *)k.l0, k.memSzL, s, OpType);
+    AESBlock *d_l1 = (AESBlock *)moveToGPU((u8 *)k.l1, k.memSzL, s, OpType);
+    u32 *d_tR = (u32 *)moveToGPU((u8 *)k.tR, k.memSzT, s, OpType);
 
     const int tbSz = 256;
     int tb = (k.N - 1) / tbSz + 1;
+
     // auto start = std::chrono::high_resolution_clock::now();
+
+    cudaEvent_t start, stop;
+    if (s) {
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start); // Start GPU timer
+    }
+
     // kernel launch
     dpfTreeEval<T, t><<<tb, tbSz>>>(party, k.bin, k.N, d_in, d_scw, d_l0, d_l1, d_tR, d_out, oStride, *g);
     checkCudaErrors(cudaDeviceSynchronize());
+
+    if (s) {
+        cudaEventRecord(stop); // Stop GPU timer
+        cudaEventSynchronize(stop);
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+        auto elapsed= static_cast<uint64_t>(milliseconds * 1000.0f); // Convert ms to µs
+        s->compute_time += elapsed;
+        // Update flag-specific stats using OpType to identify the operation
+        switch (OpType)
+        {
+        case 1:
+            s->mha_matmul_compute_time += elapsed;
+            break;
+        case 2:
+            s->mha_softmax_compute_time += elapsed;
+            break;
+        case 3:
+            s->mha_rot_compute_time += elapsed;
+            break;
+        case 4:
+            s->layernorm_compute_time += elapsed;
+            break;
+        case 5:
+            s->dcf_compute_time += elapsed;
+            break;
+        }
+        
+        cudaEventDestroy(start);
+        cudaEventDestroy(stop);
+    }
+
     // auto end = std::chrono::high_resolution_clock::now();
     // auto elapsed = end - start;
     // printf("Time taken by dpf kernel=%lu micros\n", std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
@@ -262,44 +304,124 @@ void gpuDpfTreeEval(GPUDPFTreeKey k, int party, T *d_in, AESGlobalContext *g, St
 
 // no memory leak
 template <typename T>
-u32 *gpuDpf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s)
+u32 *gpuDpf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
     u32 *d_out;
     if (k.bin <= 7)
-        d_out = gpuLookupSSTable<T, 1, idPrologue, idEpilogue>(k.ssKey, party, d_in, s);
+        d_out = gpuLookupSSTable<T, 1, idPrologue, idEpilogue>(k.ssKey, party, d_in, s, OpType);
     else
     {
-        d_out = moveMasks(k.memSzOut, NULL, s);
+        d_out = moveMasks(k.memSzOut, NULL, s, OpType);
         int n = k.dpfTreeKey[0].N;
         size_t gIntSzOut = k.memSzOut / sizeof(PACK_TYPE);
         size_t bIntSzOut = k.dpfTreeKey[0].memSzOut / sizeof(PACK_TYPE);
         for (int b = 0; b < k.B; b++)
         {
-            gpuDpfTreeEval<T, doDpf>(k.dpfTreeKey[b], party, d_in + b * n, g, s, d_out + b * bIntSzOut, (u64)gIntSzOut);
+            gpuDpfTreeEval<T, doDpf>(k.dpfTreeKey[b], party, d_in + b * n, g, s, d_out + b * bIntSzOut, (u64)gIntSzOut, OpType);
         }
     }
     return d_out;
 }
 
 template <typename T, int E, dpfPrologue pr, dpfEpilogue ep>
-u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std::vector<u32 *> *h_masks = NULL)
+u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std::vector<u32 *> *h_masks = NULL, int OpType = 0)
 {
     // printf("Started gpu dcf\n");
+    uint64_t initial_compute_time = 0;  
+    uint64_t initial_comm_time = 0;
+    uint64_t initial_transfer_time = 0;
+
+     // Start timing for the entire gpuDcf function
+    if(s){
+        switch(OpType){
+            case 0:
+                initial_compute_time = s->compute_time;
+                initial_comm_time = s->comm_time;
+                initial_transfer_time = s->transfer_time;
+                break;
+            case 1:
+                initial_compute_time = s->mha_matmul_compute_time;
+                initial_comm_time = s->mha_matmul_comm_time;
+                initial_transfer_time = s->mha_matmul_transfer_time;
+                break;
+            case 2:
+                initial_compute_time = s->mha_softmax_compute_time;
+                initial_comm_time = s->mha_softmax_comm_time;
+                initial_transfer_time = s->mha_softmax_transfer_time;
+                break;
+            case 3:
+                initial_compute_time = s->mha_rot_compute_time;
+                initial_comm_time = s->mha_rot_comm_time;
+                initial_transfer_time = s->mha_rot_transfer_time;
+                break;
+            case 4:
+                initial_compute_time = s->layernorm_compute_time;
+                initial_comm_time = s->layernorm_comm_time;
+                initial_transfer_time = s->layernorm_transfer_time;
+                break;
+        }
+    }
+
     u32 *d_out;
     if (k.bin <= 7)
-        d_out = gpuLookupSSTable<T, E, pr, ep>(k.ssKey, party, d_in, s, h_masks);
+        d_out = gpuLookupSSTable<T, E, pr, ep>(k.ssKey, party, d_in, s, h_masks, OpType);
     else
     {
-        d_out = moveMasks(k.memSzOut, h_masks, s);
+        d_out = moveMasks(k.memSzOut, h_masks, s, OpType);
         size_t gIntSzOut = k.memSzOut / sizeof(PACK_TYPE);
         int n = k.dpfTreeKey[0].N;
         size_t bIntSzOut = k.dpfTreeKey[0].memSzOut / sizeof(PACK_TYPE);
         // printf("outSz=%lu\n", bIntSzOut);
         for (int b = 0; b < k.B; b++)
         {
-            gpuDpfTreeEval<T, doDcf<E, pr, ep>>(k.dpfTreeKey[b], party, d_in + b * n, g, s, d_out + b * bIntSzOut, (u64)gIntSzOut);
+            gpuDpfTreeEval<T, doDcf<E, pr, ep>>(k.dpfTreeKey[b], party, d_in + b * n, g, s, d_out + b * bIntSzOut, (u64)gIntSzOut, OpType);
         }
     }
+
+    uint64_t final_compute_time = 0;
+    uint64_t final_comm_time = 0;
+    uint64_t final_transfer_time = 0;
+
+        // End timing for the entire gpuDcf function and update stats
+    if(s){
+        switch(OpType){
+            case 0:
+                final_compute_time = s->compute_time;
+                final_comm_time = s->comm_time;
+                final_transfer_time = s->transfer_time;
+                break;
+            case 1:
+                final_compute_time = s->mha_matmul_compute_time;
+                final_comm_time = s->mha_matmul_comm_time;
+                final_transfer_time = s->mha_matmul_transfer_time;
+                break;
+            case 2:
+                final_compute_time = s->mha_softmax_compute_time;
+                final_comm_time = s->mha_softmax_comm_time;
+                final_transfer_time = s->mha_softmax_transfer_time;
+                break;
+            case 3:
+                final_compute_time = s->mha_rot_compute_time;
+                final_comm_time = s->mha_rot_comm_time;
+                final_transfer_time = s->mha_rot_transfer_time;
+                break;
+            case 4:
+                final_compute_time = s->layernorm_compute_time;
+                final_comm_time = s->layernorm_comm_time;
+                final_transfer_time = s->layernorm_transfer_time;
+                break;
+        }
+    }
+    uint64_t compute_time = final_compute_time - initial_compute_time;
+    uint64_t comm_time = final_comm_time - initial_comm_time;
+    uint64_t transfer_time = final_transfer_time - initial_transfer_time;
+
+    if(s && OpType != 5){ //Dont update if the flag is for DCF itself, to avoid double counting
+        s->dcf_compute_time += compute_time;
+        s->dcf_comm_time += comm_time;
+        s->dcf_transfer_time += transfer_time;
+    }
+
     return d_out;
 }
 

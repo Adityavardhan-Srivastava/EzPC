@@ -20,6 +20,7 @@
 // SOFTWARE.
 
 #include "gpu_avgpool.h"
+#include <chrono>
 
 template <typename T>
 __global__ void addPoolKernel(AvgPoolParams p, T *I, T *O, int N)
@@ -66,12 +67,41 @@ __global__ void addPoolKernel(AvgPoolParams p, T *I, T *O, int N)
 }
 
 template <typename T>
-T *gpuAddPoolBackProp(AvgPoolParams p, T *d_incomingGrad, Stats *s)
+T *gpuAddPoolBackProp(AvgPoolParams p, T *d_incomingGrad, Stats *s, int OpType = 0)
 {
     int outSz = p.N * p.H * p.W * p.C * p.FH * p.FW;
     auto d_expandedGrad = (T *)gpuMalloc(outSz * sizeof(T));
+
+    auto start = std::chrono::high_resolution_clock::now();
     expandKernel<<<(outSz - 1) / 256 + 1, 256>>>(p, d_incomingGrad, d_expandedGrad, outSz);
-    auto d_outgoingGrad = gpuCollectGradients(p, d_expandedGrad, s);
+    checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = end - start;
+    if (s)
+    {
+        s->compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+
+        // Update flag-specific stats using OpType to identify the operation
+        switch (OpType)
+        {        
+            case 1:
+                s->mha_matmul_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 2:
+                s->mha_softmax_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 3:
+                s->mha_rot_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 4:
+                s->layernorm_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+            case 5:
+                s->dcf_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+                break;
+        }
+    }
+    auto d_outgoingGrad = gpuCollectGradients(p, d_expandedGrad, s, OpType);
     gpuFree(d_expandedGrad);
     size_t inSz = p.N * p.imgH * p.imgW * p.C;
     T c = (T(1) << p.scaleDiv) / T(p.FH * p.FW);
@@ -81,12 +111,42 @@ T *gpuAddPoolBackProp(AvgPoolParams p, T *d_incomingGrad, Stats *s)
 }
 
 template <typename T>
-T *gpuAddPool(AvgPoolParams p, T *d_I, Stats *s)
+T *gpuAddPool(AvgPoolParams p, T *d_I, Stats *s, int OpType = 0)
 {
     // printf("Avg pool: %d\n", p.bw);
     int outSz = getMSz(p);
     T *d_O = (T *)gpuMalloc(outSz * sizeof(T));
+
+    auto start = std::chrono::high_resolution_clock::now();
+
     addPoolKernel<<<(outSz - 1) / 256 + 1, 256>>>(p, d_I, d_O, outSz);
     checkCudaErrors(cudaDeviceSynchronize());
+        
+    auto end = std::chrono::high_resolution_clock::now();
+    auto elapsed = end - start;
+    if (s)
+    {
+        s->compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+        // Update flag-specific stats using OpType to identify the operation
+        switch (OpType)
+        {
+        case 1:
+            s->mha_matmul_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 2:
+            s->mha_softmax_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 3:
+            s->mha_rot_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 4:
+            s->layernorm_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        case 5:
+            s->dcf_compute_time += std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+            break;
+        }
+    }
+    
     return d_O;
 }

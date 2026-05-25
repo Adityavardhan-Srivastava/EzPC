@@ -22,6 +22,7 @@
 #include "utils/gpu_data_types.h"
 #include "utils/gpu_random.h"
 #include "gpu_relu.h"
+#include <chrono>
 
 template <typename T>
 __global__ void populateCurMax(MaxpoolParams p, T *curMax, T *img, int N)
@@ -84,15 +85,33 @@ __global__ void diffWithCurMax(MaxpoolParams p, int fh, int fw, T *curMax, T *im
 template <typename T>
 T *gpuMaxpoolLinHelper(SigmaPeer *peer, int party, MaxpoolParams p, GPUReluKey<T> k, int fh, int fw,
                        T *d_curMax, T *d_in,
-                       AESGlobalContext *gaes, Stats *s)
+                       AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     int outSz = getMSz(p);
     T *d_diff = (T *)gpuMalloc(outSz * sizeof(T));
     // int tb_size = 256;
+    auto start = std::chrono::high_resolution_clock::now();
     diffWithCurMax<<<(outSz - 1) / 256 + 1, 256>>>(p, fh, fw, d_curMax, d_in, d_diff, outSz);
     checkCudaErrors(cudaDeviceSynchronize());
+
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    // RECORD TIME
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
+
     // relu(x-y)
-    auto d_newMax = gpuRelu<T, T, 0, 0, false>(peer, party, k, d_diff, gaes, s);
+    auto d_newMax = gpuRelu<T, T, 0, 0, false>(peer, party, k, d_diff, gaes, s, OpType);
     gpuFree(d_diff);
     // relu(x-y) + y
     gpuLinearComb(p.bw, outSz, d_newMax, T(1), d_newMax, T(1), d_curMax);
@@ -100,7 +119,7 @@ T *gpuMaxpoolLinHelper(SigmaPeer *peer, int party, MaxpoolParams p, GPUReluKey<T
 }
 
 template <typename T>
-T *gpuMaxpoolLin(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s)
+T *gpuMaxpoolLin(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     int outSz = getMSz(p);
     T *d_curMax = (T *)gpuMalloc(outSz * sizeof(T));
@@ -110,11 +129,28 @@ T *gpuMaxpoolLin(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k
         {
             if (i == 0 && j == 0)
             {
+                auto start = std::chrono::high_resolution_clock::now();
                 populateCurMax<<<(outSz - 1) / 256 + 1, 256>>>(p, d_curMax, d_I, outSz);
+                checkCudaErrors(cudaDeviceSynchronize());
+                auto end = std::chrono::high_resolution_clock::now();
+                // RECORD TIME
+                
+                if (s) {
+                    uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+                    s->compute_time += elapsed;
+                    
+                    switch (OpType) {
+                        case 1: s->mha_matmul_compute_time += elapsed; break;
+                        case 2: s->mha_softmax_compute_time += elapsed; break;
+                        case 3: s->mha_rot_compute_time += elapsed; break;
+                        case 4: s->layernorm_compute_time += elapsed; break;
+                        case 5: s->dcf_compute_time += elapsed; break;
+                    }
+                }
                 continue;
             }
             // printf("Inside Maxpool=%d, %d\n", i, j);
-            auto d_newMax = gpuMaxpoolLinHelper(peer, party, p, k.reluKey[i * p.FW + j - 1], i, j, d_curMax, d_I, gaes, s);
+            auto d_newMax = gpuMaxpoolLinHelper(peer, party, p, k.reluKey[i * p.FW + j - 1], i, j, d_curMax, d_I, gaes, s, OpType);
             // printf("Finished Maxpool=%d, %d\n", i, j);
             gpuFree(d_curMax);
             d_curMax = d_newMax;
@@ -335,7 +371,7 @@ T *gpuKeygenMaxpoolLog(uint8_t **key_as_bytes, int party, MaxpoolParams p, T *d_
 
 // M*N matrix
 template <typename T>
-T *maxpoolLogHelper(SigmaPeer *peer, int party, MaxpoolParams p, int i, GPUReluKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s)
+T *maxpoolLogHelper(SigmaPeer *peer, int party, MaxpoolParams p, int i, GPUReluKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     int oLen;
     if (p.isLowerTriangular)
@@ -349,14 +385,41 @@ T *maxpoolLogHelper(SigmaPeer *peer, int party, MaxpoolParams p, int i, GPUReluK
         oLen = p.N * p.imgH * (p.imgW / (1ULL << (i + 1)));
     }
     T *d_diff = (T *)gpuMalloc(oLen * sizeof(T));
+
+    auto start_sub = std::chrono::high_resolution_clock::now();
     sub<<<(oLen - 1) / 128 + 1, 128>>>(p.bw, p.N, p.imgH, p.imgW, i, p.isLowerTriangular, d_I, d_diff);
-    auto d_relu = gpuRelu<T, T, 0, 0, false>(peer, party, k, d_diff, gaes, s);
+    checkCudaErrors(cudaDeviceSynchronize());
+    auto end_sub = std::chrono::high_resolution_clock::now();
+
+    // self-timed relu
+    auto d_relu = gpuRelu<T, T, 0, 0, false>(peer, party, k, d_diff, gaes, s, OpType);
+    
+    // Time the 'add' kernel
+    auto start_add = std::chrono::high_resolution_clock::now();
     add<<<(oLen - 1) / 128 + 1, 128>>>(p.bw, p.N, p.imgH, p.imgW, i, p.isLowerTriangular, d_I, d_relu);
+    checkCudaErrors(cudaDeviceSynchronize());
+    auto end_add = std::chrono::high_resolution_clock::now();
+
+    if (s) {
+        uint64_t elapsed_sub = std::chrono::duration_cast<std::chrono::microseconds>(end_sub - start_sub).count();
+        uint64_t elapsed_add = std::chrono::duration_cast<std::chrono::microseconds>(end_add - start_add).count();
+        uint64_t total_elapsed = elapsed_sub + elapsed_add;
+        
+        s->compute_time += total_elapsed;
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += total_elapsed; break;
+            case 2: s->mha_softmax_compute_time += total_elapsed; break;
+            case 3: s->mha_rot_compute_time += total_elapsed; break;
+            case 4: s->layernorm_compute_time += total_elapsed; break;
+            case 5: s->dcf_compute_time += total_elapsed; break;
+        }
+    }
+
     return d_relu;
 }
 
 template <typename T>
-T *gpuMaxpoolLog(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s)
+T *gpuMaxpoolLog(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     assert(/*p.N == 1 &&*/ p.C == 1 && p.strideH == 1 && p.strideW == p.FW && p.strideH == p.FH);
     // T *d_I = d_in;
@@ -369,7 +432,7 @@ T *gpuMaxpoolLog(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k
     {
         // printf("Round=%d, num Relus=%d\n", i, k.reluKey[i].numRelus);
         // compare r consecutive elements
-        d_O = maxpoolLogHelper(peer, party, p, i, k.reluKey[i], d_I, gaes, s);
+        d_O = maxpoolLogHelper(peer, party, p, i, k.reluKey[i], d_I, gaes, s, OpType);
         if (i > 0)
             gpuFree(d_I);
         d_I = d_O;
@@ -396,17 +459,17 @@ T *gpuKeygenMaxpool(uint8_t **key_as_bytes, int party, MaxpoolParams p, T *d_inp
 }
 
 template <typename T>
-T *gpuMaxpool(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s)
+T *gpuMaxpool(SigmaPeer *peer, int party, MaxpoolParams p, GPUMaxpoolKey<T> k, T *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     T *d_O;
     if (k.rounds < p.FH * p.FW - 1)
     {
         assert(p.zPadHLeft == 0 && p.zPadHRight == 0 && p.zPadWLeft == 0 && p.zPadWRight == 0);
-        d_O = gpuMaxpoolLog(peer, party, p, k, d_I, gaes, s);
+        d_O = gpuMaxpoolLog(peer, party, p, k, d_I, gaes, s, OpType);
     }
     else
     {
-        d_O = gpuMaxpoolLin(peer, party, p, k, d_I, gaes, s);
+        d_O = gpuMaxpoolLin(peer, party, p, k, d_I, gaes, s, OpType);
     }
     return d_O;
 }
@@ -598,16 +661,35 @@ void gpuAndForMaxpool(MaxpoolParams p, int pos, GPUAndKey k,
 }
 
 template <typename T>
-T *gpuCollectGradients(MaxpoolParams p, T *d_outgoingGradExpanded, Stats *s)
+T *gpuCollectGradients(MaxpoolParams p, T *d_outgoingGradExpanded, Stats *s, int OpType = 0)
 {
     size_t outgoingGradSize = p.N * p.imgH * p.imgW * p.C;
     size_t outgoingGradMemSize = outgoingGradSize * sizeof(T);
     T *d_outgoingGrad = (T *)gpuMalloc(outgoingGradMemSize);
     const int tbSize = 256;
     assert(p.zPadHLeft == 0 && p.zPadHRight == 0 && p.zPadWLeft == 0 && p.zPadWRight == 0);
+    
+    auto start = std::chrono::high_resolution_clock::now();
+    
     gpuCollectGradientsKernel<<<(outgoingGradSize - 1) / tbSize + 1, tbSize>>>(p, d_outgoingGradExpanded, d_outgoingGrad, outgoingGradSize);
     cudaDeviceSynchronize();
     checkCudaErrors(cudaGetLastError());
+    
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    // RECORD TIME
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
     return d_outgoingGrad;
 }
 

@@ -20,6 +20,7 @@
 // SOFTWARE.
 
 #include "gpu_mul.h"
+#include <chrono>
 
 template <typename T>
 __global__ void keygenBeaver(int bw, int N, T *A, T *B, T *C, T *C1)
@@ -61,17 +62,34 @@ T *gpuKeygenMul(u8 **key_as_bytes, int party, int bw, int scale, int N, T *d_mas
 }
 
 template <typename T>
-T *gpuMul(SigmaPeer *peer, int party, int bw, int scale, int N, GPUMulKey<T> k, T *d_X, T *d_Y, TruncateType t, AESGlobalContext *gaes, Stats *s)
+T *gpuMul(SigmaPeer *peer, int party, int bw, int scale, int N, GPUMulKey<T> k, T *d_X, T *d_Y, TruncateType t, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     u64 b0 = peer->bytesSent() + peer->bytesReceived();
-    auto d_a = (T *)moveToGPU((u8 *)k.a, 3 * N * sizeof(T), s);
+    auto d_a = (T *)moveToGPU((u8 *)k.a, 3 * N * sizeof(T), s, OpType);
     auto d_b = d_a + N;
     auto d_c = d_b + N;
     auto d_Z = (T *)gpuMalloc(N * sizeof(T));
+
+    auto start = std::chrono::high_resolution_clock::now();
     doBeaverMul<<<(N - 1) / 128 + 1, 128>>>(party, bw, N, d_X, d_Y, d_a, d_b, d_c, d_Z);
+    checkCudaErrors(cudaDeviceSynchronize());
+    auto end = std::chrono::high_resolution_clock::now();
+    if (s) {
+        uint64_t elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+        s->compute_time += elapsed;
+        
+        switch (OpType) {
+            case 1: s->mha_matmul_compute_time += elapsed; break;
+            case 2: s->mha_softmax_compute_time += elapsed; break;
+            case 3: s->mha_rot_compute_time += elapsed; break;
+            case 4: s->layernorm_compute_time += elapsed; break;
+            case 5: s->dcf_compute_time += elapsed; break;
+        }
+    }
+
     gpuFree(d_a);
-    peer->reconstructInPlace(d_Z, bw, N, s);
-    auto d_truncated_Z = gpuTruncate<T, T>(bw, bw, t, k.trKey, scale, peer, party, N, d_Z, gaes, s); //, true);
+    peer->reconstructInPlace(d_Z, bw, N, s, OpType);
+    auto d_truncated_Z = gpuTruncate<T, T>(bw, bw, t, k.trKey, scale, peer, party, N, d_Z, gaes, s, OpType); //, true);
     if (d_truncated_Z != d_Z)
         gpuFree(d_Z);
     u64 b1 = peer->bytesSent() + peer->bytesReceived();
