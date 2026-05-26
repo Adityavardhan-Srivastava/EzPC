@@ -279,6 +279,22 @@ template <typename TIn, typename TOut>
 TOut *gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<TOut> k, int shift, SigmaPeer *peer, int party, int N, TIn *d_I, AESGlobalContext *gaes, Stats *s, int OpType = 0)
 {
     TOut *d_O;
+
+    auto global_transfer_start = 0;
+    auto global_compute_start = 0;
+    auto global_comm_start = 0;
+    auto mha_transfer_start = 0;
+    auto mha_compute_start = 0;
+    auto mha_comm_start = 0;
+    if (s){
+        global_transfer_start = s->transfer_time;
+        global_compute_start = s->compute_time;
+        global_comm_start = s->comm_time;
+        mha_transfer_start = s->mha_matmul_transfer_time;
+        mha_compute_start = s->mha_matmul_compute_time;
+        mha_comm_start = s->mha_matmul_comm_time;
+    }
+
     switch (t)
     {
     case TruncateType::LocalLRS:
@@ -303,5 +319,16 @@ TOut *gpuTruncate(int bin, int bout, TruncateType t, GPUTruncateKey<TOut> k, int
     default:
         assert(0 && "unknown truncate type!");
     }
+
+
+    if (s){
+        s->truncate_global_transfer_time += (s->transfer_time - global_transfer_start);
+        s->truncate_global_compute_time += (s->compute_time - global_compute_start);
+        s->truncate_global_comm_time += (s->comm_time - global_comm_start);
+        s->truncate_matmul_transfer_time += (s->mha_matmul_transfer_time - mha_transfer_start);
+        s->truncate_matmul_compute_time += (s->mha_matmul_compute_time - mha_compute_start);
+        s->truncate_matmul_comm_time += (s->mha_matmul_comm_time - mha_comm_start);
+    }
+
     return d_O;
 }

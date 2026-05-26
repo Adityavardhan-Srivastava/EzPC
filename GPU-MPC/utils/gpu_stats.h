@@ -80,6 +80,14 @@ public:
     uint64_t dcf_compute_time = 0; 
     uint64_t dcf_comm_time = 0; 
 
+    uint64_t truncate_global_transfer_time = 0; // Self measured in the function definition, not using the OpType flag
+    uint64_t truncate_global_compute_time = 0;
+    uint64_t truncate_global_comm_time = 0;
+
+    uint64_t truncate_matmul_transfer_time = 0; // the same method as above
+    uint64_t truncate_matmul_compute_time = 0;
+    uint64_t truncate_matmul_comm_time = 0;
+
     void reset()
     {
         transfer_time = 0;
@@ -138,5 +146,13 @@ public:
         dcf_transfer_time = 0;
         dcf_compute_time = 0;
         dcf_comm_time = 0;
+
+        truncate_global_transfer_time = 0;
+        truncate_global_compute_time = 0;
+        truncate_global_comm_time = 0;
+
+        truncate_matmul_transfer_time = 0;
+        truncate_matmul_compute_time = 0;
+        truncate_matmul_comm_time = 0;
     }
 };

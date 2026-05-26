@@ -250,6 +250,12 @@ int main(int __argc, char **__argv)
     ss << std::endl;
     ss << "MHA Matmul Comm=" + std::to_string(sigma->s.mha_matmul_comm_time) + " us";
     ss << std::endl;
+    ss << "Matmul Truncate Transfer=" + std::to_string(sigma->s.truncate_matmul_transfer_time) + " us";
+    ss << std::endl;
+    ss << "Matmul Truncate Compute=" + std::to_string(sigma->s.truncate_matmul_compute_time) + " us";
+    ss << std::endl;
+    ss << "Matmul Truncate Comm=" + std::to_string(sigma->s.truncate_matmul_comm_time) + " us";
+    ss << std::endl;
     ss << "MHA Softmax Transfer=" + std::to_string(sigma->s.mha_softmax_transfer_time) + " us";
     ss << std::endl;
     ss << "MHA Softmax Compute=" + std::to_string(sigma->s.mha_softmax_compute_time) + " us";
@@ -273,6 +279,12 @@ int main(int __argc, char **__argv)
     ss << "DCF Compute=" + std::to_string(sigma->s.dcf_compute_time) + " us";
     ss << std::endl;
     ss << "DCF Comm=" + std::to_string(sigma->s.dcf_comm_time) + " us";
+    ss << std::endl;
+    ss << "Truncate Global Transfer=" + std::to_string(sigma->s.truncate_global_transfer_time) + " us";
+    ss << std::endl;
+    ss << "Truncate Global Compute=" + std::to_string(sigma->s.truncate_global_compute_time) + " us";
+    ss << std::endl;
+    ss << "Truncate Global Comm=" + std::to_string(sigma->s.truncate_global_comm_time) + " us";
     ss << std::endl;
 
     statsFile.open(inferenceDir + "evaluator.txt");
