@@ -88,6 +88,14 @@ public:
     uint64_t truncate_matmul_compute_time = 0;
     uint64_t truncate_matmul_comm_time = 0;
 
+    uint64_t QKV_transfer_time = 0;
+    uint64_t QKV_compute_time = 0;
+    uint64_t QKV_comm_time = 0;
+
+    uint64_t mha_proj_transfer_time = 0;
+    uint64_t mha_proj_compute_time = 0;
+    uint64_t mha_proj_comm_time = 0;    
+
     void reset()
     {
         transfer_time = 0;
@@ -154,5 +162,13 @@ public:
         truncate_matmul_transfer_time = 0;
         truncate_matmul_compute_time = 0;
         truncate_matmul_comm_time = 0;
+
+        QKV_transfer_time = 0;
+        QKV_compute_time = 0;
+        QKV_comm_time = 0;
+
+        mha_proj_transfer_time = 0;
+        mha_proj_compute_time = 0;
+        mha_proj_comm_time = 0;
     }
 };

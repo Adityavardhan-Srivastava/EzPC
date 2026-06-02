@@ -167,8 +167,15 @@ template <typename T>
 T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulParams pMHAMul, GPUMHAKey<T> k, T *WQKV, T *YQKV, T *WProj, T *YProj, T *d_X, MHATables<T> t, AESGlobalContext *g, Stats *s, int OpType = 0)
 {
     auto b0 = peer->bytesSent() + peer->bytesReceived();
-
+    
+    uint64_t start_QKV_transfer = s->mha_matmul_transfer_time;
+    uint64_t start_QKV_compute = s->mha_matmul_compute_time;
+    uint64_t start_QKV_comm = s->mha_matmul_comm_time;
     auto d_QKV = gpuMatmul<u64>(peer, party, pMHAMul.pQKV, k.mmKeyQKV, d_X, WQKV, YQKV, TruncateType::TrFloor, g, s, false, nullptr, 1);
+    s->QKV_transfer_time += s->mha_matmul_transfer_time - start_QKV_transfer;
+    s->QKV_compute_time += s->mha_matmul_compute_time - start_QKV_compute;
+    s->QKV_comm_time += s->mha_matmul_comm_time - start_QKV_comm;
+
     // this->activation.d_data = d_QKV;
     size_t QKSz = pMHAMul.pQKV.size_C / 3;
     auto d_Q = d_QKV;
@@ -212,8 +219,15 @@ T *gpuMHA(SigmaPeer *peer, int party, int bw, int scale, MHAParams pMHA, MHAMulP
     gpuFree(d_smQKt);
     gpuFree(d_QKV);
     // // this->activation.d_data = d_smQKtV;
+    uint64_t start_proj_transfer = s->mha_matmul_transfer_time;
+    uint64_t start_proj_compute = s->mha_matmul_compute_time;
+    uint64_t start_proj_comm = s->mha_matmul_comm_time;
     auto d_proj = gpuMatmul<u64>(peer, party, pMHAMul.pProj, k.mmKeyProj, d_smQKtV, WProj, YProj, TruncateType::TrFloor, g, s, false, nullptr, 1);
     gpuFree(d_smQKtV);
+    s->mha_proj_transfer_time += s->mha_matmul_transfer_time - start_proj_transfer;
+    s->mha_proj_compute_time += s->mha_matmul_compute_time - start_proj_compute;
+    s->mha_proj_comm_time += s->mha_matmul_comm_time - start_proj_comm;
+    
     auto b1 = peer->bytesSent() + peer->bytesReceived();
     return d_proj;
 }

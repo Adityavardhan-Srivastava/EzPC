@@ -256,6 +256,18 @@ int main(int __argc, char **__argv)
     ss << std::endl;
     ss << "Matmul Truncate Comm=" + std::to_string(sigma->s.truncate_matmul_comm_time) + " us";
     ss << std::endl;
+    ss << "QKV projection Transfer=" + std::to_string(sigma->s.QKV_transfer_time) + " us";
+    ss << std::endl;
+    ss << "QKV projection Compute=" + std::to_string(sigma->s.QKV_compute_time) + " us";
+    ss << std::endl;
+    ss << "QKV projection Comm=" + std::to_string(sigma->s.QKV_comm_time) + " us";
+    ss << std::endl;
+    ss << "MHA matmul projection Transfer=" + std::to_string(sigma->s.mha_proj_transfer_time) + " us";
+    ss << std::endl;
+    ss << "MHA matmul projection Compute=" + std::to_string(sigma->s.mha_proj_compute_time) + " us";
+    ss << std::endl;
+    ss << "MHA matmul projection Comm=" + std::to_string(sigma->s.mha_proj_comm_time) + " us";
+    ss << std::endl;
     ss << "MHA Softmax Transfer=" + std::to_string(sigma->s.mha_softmax_transfer_time) + " us";
     ss << std::endl;
     ss << "MHA Softmax Compute=" + std::to_string(sigma->s.mha_softmax_compute_time) + " us";
