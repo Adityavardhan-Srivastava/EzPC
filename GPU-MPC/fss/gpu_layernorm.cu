@@ -64,7 +64,8 @@ T *gpuSum(int bw, int M, int N, T *d_X)
     if (bw < 8 * sizeof(T))
         modKernel<<<(M - 1) / 128 + 1, 128>>>(M, d_Y, bw);
     checkCudaErrors(cudaDeviceSynchronize());
-    gpuFree(workspace);
+    if (workspace)
+        gpuFree(workspace);
     // auto h_Y = (T*) moveToCPU((u8*) d_Y, 1 * sizeof(T), NULL);
     // printf("%ld\n", h_Y[0]);
     return d_Y;
@@ -110,6 +111,204 @@ T *pointFunc(int party, int bw, int N, T *d_X, u8 *bytes)
     return d_O;
 }
 
+// // ============================================================
+// // GPU LayerNorm Keygen (Unmodified FSS Logic + Logging)
+// // ============================================================
+// template <typename T>
+// T *gpuKeygenLayerNorm(u8 **key_as_bytes, int party, AvgPoolParams p, T *d_mask_A, T *d_mask_B, T *d_mask_X, AESGlobalContext *gaes, bool computeMu = true)
+// {
+//     assert(p.N == 1);
+//     int inSz = getInSz(p);
+//     int mSz = getMSz(p);
+//     T *d_mask_xMMu = d_mask_X;
+    
+//     // Temporary host buffer for debug logging
+//     T h_tmp[50]; 
+
+//     cudaMemcpy(h_tmp, d_mask_X, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] === LayerNorm Keygen ===\n", party);
+//     printf("[DEALER P%d] inSz=%d mSz=%d imgW=%d\n", party, inSz, mSz, p.imgW);
+//     printf("[DEALER P%d] 0_InputMask[0]=%lu [1]=%lu [16]=%lu [17]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17]);
+
+//     if (computeMu)
+//     {
+//         auto d_sumMask = gpuSum(p.bw, p.imgH, p.imgW, d_mask_X);
+        
+//         cudaMemcpy(h_tmp, d_sumMask, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//         printf("[DEALER P%d] 1_SumMask[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//                party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//         T *d_mask_mu;
+//         if ((p.imgW & (p.imgW - 1)) == 0)
+//         {
+//             d_mask_mu = genGPUTruncateKey<T, T>(key_as_bytes, party, TruncateType::TrFloor, p.bw, p.bw, int(log2(p.imgW)), mSz, d_sumMask, gaes);
+//         }
+//         else
+//         {
+//             gpuLinearComb(p.bw, mSz, d_sumMask, T((1LL << p.scale) / (double)p.imgW), d_sumMask);
+//             d_mask_mu = genGPUTruncateKey<T, T>(key_as_bytes, party, TruncateType::TrFloor, p.bw, p.bw, p.scale, mSz, d_sumMask, gaes);
+//         }
+//         gpuFree(d_sumMask);
+
+//         cudaMemcpy(h_tmp, d_mask_mu, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//         printf("[DEALER P%d] 2_MuMask[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//                party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//         d_mask_xMMu = windowFunc<T, xPlusM<u64(1), u64(-1)>>(party, p, d_mask_X, d_mask_mu);
+        
+//         cudaMemcpy(h_tmp, d_mask_xMMu, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//         printf("[DEALER P%d] 3_xMinusMuMask[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//                party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+//     }
+
+//     auto d_mask_sq = randomGEOnGpu<T>(inSz, p.bw);
+//     auto d_mask_sqModified = pointFunc<T, squareKeygen<T>>(party, p.bw, inSz, d_mask_xMMu, (u8 *)d_mask_sq);
+
+//     cudaMemcpy(h_tmp, d_mask_sq, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] 4_SqMask[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     cudaMemcpy(h_tmp, d_mask_sqModified, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] 4_SqModifiedMask[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     writeShares<T, T>(key_as_bytes, party, inSz, d_mask_xMMu, p.bw);
+//     writeShares<T, T>(key_as_bytes, party, inSz, d_mask_sqModified, p.bw);
+//     gpuFree(d_mask_sqModified);
+
+//     auto d_mask_sumSq = gpuSum(p.bw, p.imgH, p.imgW, d_mask_sq);
+//     gpuFree(d_mask_sq);
+
+//     cudaMemcpy(h_tmp, d_mask_sumSq, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] 5_SumSqMask[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     auto d_mask_invSqrt = gpuFssKeyGenRsqrt<T>(
+//     key_as_bytes, party, p.bw, p.bw, p.scale, mSz, d_mask_sumSq, gaes);
+//     gpuFree(d_mask_sumSq);
+    
+//     cudaMemcpy(h_tmp, d_mask_invSqrt, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] 6_InvSqrtMask[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     auto d_mask_normX = keygenWindowMul(key_as_bytes, party, p, d_mask_xMMu, d_mask_invSqrt, TruncateType::TrWithSlack, gaes);
+//     gpuFree(d_mask_invSqrt);
+    
+//     cudaMemcpy(h_tmp, d_mask_normX, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] 7_NormXMask[0]=%lu [4]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+
+//     auto p2 = transposeWindow(p);
+//     auto d_mask_layerNorm = keygenWindowMul(key_as_bytes, party, p2, d_mask_normX, d_mask_A, TruncateType::TrWithSlack, gaes, d_mask_B);
+//     gpuFree(d_mask_normX);
+    
+//     cudaMemcpy(h_tmp, d_mask_layerNorm, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEALER P%d] 8_LayerNormOutputMask[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+
+//     return d_mask_layerNorm;
+// }
+
+// // ============================================================
+// // GPU LayerNorm Evaluator (Unmodified FSS Logic + Logging)
+// // ============================================================
+// template <typename T>
+// T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> k,
+//                 T *d_A, T *d_B, T *d_X, T *d_rsqrtTab,
+//                 AESGlobalContext *gaes, Stats *s, bool computeMu = true, int OpType = 0)
+// {
+//     assert(8 * sizeof(T) == 64);
+//     int inSz = getInSz(p);
+//     int mSz = getMSz(p);
+//     T *d_xMMu = d_X;
+
+//     // Temporary host buffer for debug logging
+//     T h_tmp[50]; 
+
+//     cudaMemcpy(h_tmp, d_X, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] === LayerNorm Eval ===\n", party);
+//     printf("[DEBUG-PUBLIC P%d] 0_InputMasked[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+
+//     if (computeMu)
+//     {
+//         auto d_sum = gpuSum(p.bw, p.imgH, p.imgW, d_X);
+        
+//         cudaMemcpy(h_tmp, d_sum, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//         printf("[DEBUG-PUBLIC P%d] 1_SumMasked[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//                party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//         T *d_mu;
+//         if ((p.imgW & (p.imgW - 1)) == 0)
+//         {
+//             d_mu = gpuTruncate<T, T>(p.bw, p.bw, TruncateType::TrFloor, k.muTrKey, int(log2(p.imgW)), peer, party, mSz, d_sum, gaes, s, 4);
+//         }
+//         else
+//         {
+//             gpuLinearComb(p.bw, mSz, d_sum, T((1LL << p.scale) / (double)p.imgW), d_sum);
+//             d_mu = gpuTruncate<T, T>(p.bw, p.bw, TruncateType::TrFloor, k.muTrKey, p.scale, peer, party, mSz, d_sum, gaes, s, 4);
+//         }
+//         gpuFree(d_sum);
+
+//         cudaMemcpy(h_tmp, d_mu, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//         printf("[DEBUG-PUBLIC P%d] 2_MuMasked[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//                party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//         d_xMMu = windowFunc<T, xPlusM<u64(1), u64(-1)>>(party, p, d_X, d_mu);
+        
+//         cudaMemcpy(h_tmp, d_xMMu, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//         printf("[DEBUG-PUBLIC P%d] 3_xMinusMuMasked[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//                party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+//     }
+    
+//     auto d_sqKey = (u8 *)moveToGPU((u8 *)k.sqKey.a, (2 * inSz) * sizeof(T), s, 4);
+//     auto d_sq = pointFunc<T, square<T>>(party, p.bw, inSz, d_xMMu, (u8 *)d_sqKey);
+//     gpuFree(d_sqKey);
+    
+//     cudaMemcpy(h_tmp, d_sq, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] 4_SqMasked[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+
+//     auto d_sumSq = gpuSum(p.bw, p.imgH, p.imgW, d_sq);
+//     gpuFree(d_sq);
+
+//     cudaMemcpy(h_tmp, d_sumSq, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] 5_SumSqShare_preReconstruct[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     peer->reconstructInPlace(d_sumSq, p.bw, mSz, s, 4);
+
+//     cudaMemcpy(h_tmp, d_sumSq, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] 5_SumSqPublic_postReconstruct[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     auto d_invSqrt = gpuFssRsqrt<T>(
+//         peer, party, d_sumSq, d_rsqrtTab, mSz, k.rsqrtKey, p.bw, gaes, s, OpType);
+//     gpuFree(d_sumSq);
+
+//     cudaMemcpy(h_tmp, d_invSqrt, std::min(mSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] 6_InvSqrtMasked[0]=%lu [4]=%lu [8]=%lu [12]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[4], (u64)h_tmp[8], (u64)h_tmp[12]);
+
+//     auto d_normX = windowMul<u64>(peer, party, p, k.wMulKey1, d_xMMu, d_invSqrt, TruncateType::TrWithSlack, gaes, s, nullptr, 4);
+//     gpuFree(d_invSqrt);
+
+//     cudaMemcpy(h_tmp, d_normX, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] 7_NormXMasked[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+
+//     auto p2 = transposeWindow(p);
+//     auto d_layerNorm = windowMul(peer, party, p2, k.wMulKey2, d_normX, d_A, TruncateType::TrWithSlack, gaes, s, d_B, 4);
+//     gpuFree(d_normX);
+
+//     cudaMemcpy(h_tmp, d_layerNorm, std::min(inSz, 50) * sizeof(T), cudaMemcpyDeviceToHost);
+//     printf("[DEBUG-PUBLIC P%d] 8_LayerNormOutputMasked[0]=%lu [1]=%lu [16]=%lu [17]=%lu [48]=%lu [49]=%lu\n",
+//            party, (u64)h_tmp[0], (u64)h_tmp[1], (u64)h_tmp[16], (u64)h_tmp[17], (u64)h_tmp[48], (u64)h_tmp[49]);
+
+//     return d_layerNorm;
+// }
+
 template <typename T>
 T *gpuKeygenLayerNorm(u8 **key_as_bytes, int party, AvgPoolParams p, T *d_mask_A, T *d_mask_B, T *d_mask_X, AESGlobalContext *gaes, bool computeMu = true)
 {
@@ -153,17 +352,9 @@ T *gpuKeygenLayerNorm(u8 **key_as_bytes, int party, AvgPoolParams p, T *d_mask_A
     gpuFree(d_mask_sq);
     // return d_mask_sumSq;
 
-    auto h_mask_sumSq = (T *)moveToCPU((u8 *)d_mask_sumSq, p.imgH * sizeof(T), NULL);
-    Rsqrt(p.imgH, h_mask_sumSq, h_mask_sumSq, p.imgW, p.scale, "LayerNorm::");
-    // F2BF16(mSz, h_mask_sumSq, h_mask_sumSq, "Rsqrt::");
-    moveIntoGPUMem((u8 *)d_mask_sumSq, (u8 *)h_mask_sumSq, mSz * sizeof(T), NULL);
-    // printf("boo\n");
-    // can potentially make this u16 once we move f2bf16 to the gpu
-    // auto d_mask_invSqrt = gpuKeyGenLUT<T, T>(key_as_bytes, party, 13, p.bw, mSz, d_mask_sumSq, gaes);
-    // gpuFree(d_mask_sumSq);
-    // (x - mu)*var
-    // printf("boo\n");
-    auto d_mask_invSqrt = d_mask_sumSq;
+    auto d_mask_invSqrt = gpuFssKeyGenRsqrt<T>(
+    key_as_bytes, party, p.bw, p.bw, p.scale, mSz, d_mask_sumSq, gaes);
+    gpuFree(d_mask_sumSq);
     // return d_mask_invSqrt;
     auto d_mask_normX = keygenWindowMul(key_as_bytes, party, p, d_mask_xMMu, d_mask_invSqrt, TruncateType::TrWithSlack, gaes);
     gpuFree(d_mask_invSqrt);
@@ -185,7 +376,9 @@ T *gpuKeygenLayerNorm(u8 **key_as_bytes, int party, AvgPoolParams p, T *d_mask_A
 }
 
 template <typename T>
-T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> k, T *d_A, T *d_B, T *d_X, std::vector<GroupElement> *invSqrtTab, AESGlobalContext *gaes, Stats *s, bool computeMu = true, int OpType = 0)
+T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> k,
+                T *d_A, T *d_B, T *d_X, T *d_rsqrtTab,
+                AESGlobalContext *gaes, Stats *s, bool computeMu = true, int OpType = 0)
 {
     assert(8 * sizeof(T) == 64);
     int inSz = getInSz(p);
@@ -215,11 +408,11 @@ T *gpuLayerNorm(SigmaPeer *peer, int party, AvgPoolParams p, GPULayerNormKey<T> 
     gpuFree(d_sq);
     peer->reconstructInPlace(d_sumSq, p.bw, mSz, s, 4);
 
-    auto h_sumSq = (T *)moveToCPU((u8 *)d_sumSq, p.imgH * sizeof(T), s, 4);
-    Rsqrt(p.imgH, h_sumSq, h_sumSq, p.imgW, p.scale, "LayerNorm::", invSqrtTab);
-    moveIntoGPUMem((u8 *)d_sumSq, (u8 *)h_sumSq, mSz * sizeof(T), s, 4);
-    // (x - mu)*var
-    auto d_invSqrt = d_sumSq;
+    // Generate the invSqrt LUT table (done once outside in production; here inline for clarity)
+    // NOTE: in the test script, generate this once and pass it in as a parameter
+    auto d_invSqrt = gpuFssRsqrt<T>(
+        peer, party, d_sumSq, d_rsqrtTab, mSz, k.rsqrtKey, p.bw, gaes, s, OpType);
+    gpuFree(d_sumSq);
     auto d_normX = windowMul<u64>(peer, party, p, k.wMulKey1, d_xMMu, d_invSqrt, TruncateType::TrWithSlack, gaes, s, nullptr, 4);
     gpuFree(d_invSqrt);
     auto p2 = transposeWindow(p);

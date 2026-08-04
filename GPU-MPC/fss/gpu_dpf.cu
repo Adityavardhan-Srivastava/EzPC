@@ -235,15 +235,28 @@ __global__ void dpfTreeEval(int party, int bin, int N, T *in, AESBlock *scw,
 }
 
 template <typename T, treeTraversal t>
-void gpuDpfTreeEval(GPUDPFTreeKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, u32 *d_out, u64 oStride, int OpType = 0)
+void gpuDpfTreeEval(GPUDPFTreeKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, u32 *d_out, u64 oStride, int OpType = 0, uint4 *scw = nullptr, uint4 *l0 = nullptr, uint4 *l1 = nullptr, u32 *tR = nullptr)
 {
     // auto d_out = moveMasks(k.memSzOut, h_masks, s);
     assert(k.memSzScw % (k.bin - LOG_AES_BLOCK_LEN) == 0);
 
-    AESBlock *d_scw = (AESBlock *)moveToGPU((u8 *)k.scw, k.memSzScw, s, OpType);
-    AESBlock *d_l0 = (AESBlock *)moveToGPU((u8 *)k.l0, k.memSzL, s, OpType);
-    AESBlock *d_l1 = (AESBlock *)moveToGPU((u8 *)k.l1, k.memSzL, s, OpType);
-    u32 *d_tR = (u32 *)moveToGPU((u8 *)k.tR, k.memSzT, s, OpType);
+    AESBlock *d_scw;
+    AESBlock *d_l0;
+    AESBlock *d_l1;
+    u32 *d_tR;
+
+    if(scw && l0 && l1 && tR){
+        d_scw = (AESBlock *)scw;
+        d_l0 = (AESBlock *)l0;
+        d_l1 = (AESBlock *)l1;
+        d_tR = (u32 *)tR;
+    } else {
+        d_scw = (AESBlock *)moveToGPU((u8 *)k.scw, k.memSzScw, s, OpType);
+        d_l0 = (AESBlock *)moveToGPU((u8 *)k.l0, k.memSzL, s, OpType);
+        d_l1 = (AESBlock *)moveToGPU((u8 *)k.l1, k.memSzL, s, OpType);
+        d_tR = (u32 *)moveToGPU((u8 *)k.tR, k.memSzT, s, OpType);
+    }
+    
 
     const int tbSz = 256;
     int tb = (k.N - 1) / tbSz + 1;
@@ -295,11 +308,12 @@ void gpuDpfTreeEval(GPUDPFTreeKey k, int party, T *d_in, AESGlobalContext *g, St
     // auto end = std::chrono::high_resolution_clock::now();
     // auto elapsed = end - start;
     // printf("Time taken by dpf kernel=%lu micros\n", std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
-
-    gpuFree(d_scw);
-    gpuFree(d_l0);
-    gpuFree(d_l1);
-    gpuFree(d_tR);
+    if(!scw && !l0 && !l1 && !tR) {
+        gpuFree(d_scw);
+        gpuFree(d_l0);
+        gpuFree(d_l1);
+        gpuFree(d_tR);
+    }
 }
 
 // no memory leak
@@ -324,7 +338,7 @@ u32 *gpuDpf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, int 
 }
 
 template <typename T, int E, dpfPrologue pr, dpfEpilogue ep>
-u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std::vector<u32 *> *h_masks = NULL, int OpType = 0)
+u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std::vector<u32 *> *h_masks = NULL, int OpType = 0, uint4 *scw = nullptr, uint4 *l0 = nullptr, uint4 *l1 = nullptr, u32 *tR = nullptr)
 {
     // printf("Started gpu dcf\n");
     uint64_t initial_compute_time = 0;  
@@ -340,6 +354,7 @@ u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std:
 
     u32 *d_out;
     if (k.bin <= 7)
+    // Not adding the pointers to the masks here because the bon for layernorm is greater than 7
         d_out = gpuLookupSSTable<T, E, pr, ep>(k.ssKey, party, d_in, s, h_masks, OpType);
     else
     {
@@ -350,7 +365,7 @@ u32 *gpuDcf(GPUDPFKey k, int party, T *d_in, AESGlobalContext *g, Stats *s, std:
         // printf("outSz=%lu\n", bIntSzOut);
         for (int b = 0; b < k.B; b++)
         {
-            gpuDpfTreeEval<T, doDcf<E, pr, ep>>(k.dpfTreeKey[b], party, d_in + b * n, g, s, d_out + b * bIntSzOut, (u64)gIntSzOut, OpType);
+            gpuDpfTreeEval<T, doDcf<E, pr, ep>>(k.dpfTreeKey[b], party, d_in + b * n, g, s, d_out + b * bIntSzOut, (u64)gIntSzOut, OpType, scw, l0, l1, tR);
         }
     }
 

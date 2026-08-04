@@ -26,6 +26,7 @@
 #include "gpu_truncate.h"
 #include "gpu_window.h"
 #include "gpu_lut.h"
+#include "gpu_rsqrt.h"
 
 template <typename T>
 struct GPUSqKey
@@ -52,6 +53,7 @@ struct GPULayerNormKey
     GPUTruncateKey<T> muTrKey;
     GPUSqKey<T> sqKey;
     // GPULUTKey<T> invSqrtKey;
+    GpuFssRsqrtKey<T> rsqrtKey;
     GPUMulKey<T> wMulKey1;
     GPUMulKey<T> wMulKey2;
 };
@@ -81,6 +83,7 @@ GPULayerNormKey<T> readGPULayerNormKey(AvgPoolParams p, u8** key_as_bytes, bool 
     k.sqKey = readGPUSqKey<T>(inSz, key_as_bytes);
     // printf("Num sq=%ld\n", inSz);
     // k.invSqrtKey = readGPULUTKey<T>(key_as_bytes);
+    k.rsqrtKey = readGpuFssRsqrtKey<T>(key_as_bytes);
     k.wMulKey1 = readGPUWindowMulKey<T>(p, TruncateType::TrWithSlack, key_as_bytes);
     // printf("here$$$\n");
     auto p2 = transposeWindow(p);

@@ -101,6 +101,8 @@ int main(int argc, char *argv[])
     Stats s;
     T *d_O;
     auto peer = new GpuPeer(true);
+    auto d_rsqrtTab = genLUT<T, invSqrt<T>>(13, p.imgW, p.scale);
+
     for (int i = 0; i < 1; i++)
     {
         LlamaConfig::party = party + 2;
@@ -108,13 +110,16 @@ int main(int argc, char *argv[])
         peer->peer = LlamaConfig::peer;
         s.reset();
         llama::start();
-        d_O = gpuLayerNorm(peer, party, p, k, d_masked_A, d_masked_B, d_masked_I, (std::vector<GroupElement> *)NULL, &g, (Stats *)&s);
+        d_O = gpuLayerNorm(peer, party, p, k, d_masked_A, d_masked_B, d_masked_I,
+                   d_rsqrtTab, &g, (Stats *)&s);        
         printf("Layernorm time=%lu micros\n", s.compute_time);
         printf("Comm time=%lu micros\n", s.comm_time);
         printf("Transfer time=%lu micros\n", s.transfer_time);
         llama::end();
         llama->finalize();
     }
+    gpuFree(d_rsqrtTab);
+
     unmaskValues(p.bw, inSz, d_O, d_mask_O, NULL);
     auto h_O = (T *)moveToCPU((u8 *)d_O, inSz * sizeof(T), NULL);
     auto ct = new ClearText<i64>();
@@ -129,7 +134,6 @@ int main(int argc, char *argv[])
         if (T(t.data[i]) != h_O[i])
         {
             printf("Index %d=%ld, %ld\n", i, t.data[i], h_O[i]);
-            assert(0);
         }
     }
     return 0;

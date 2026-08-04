@@ -23,7 +23,7 @@ cd ../../..;
 # cd ext/sytorch;
 # mkdir build && cd build;
 # cmake -DCMAKE_INSTALL_PREFIX=./install -DCMAKE_BUILD_TYPE=Release ../ -DCUDAToolkit_ROOT="/usr/local/cuda-$CUDA_VERSION/bin/";
-# make sytorch -j;
+# make sytorch cryptoTools LLAMA bitpack -j32;
 # cd ../../..;
 
 # Download CIFAR-10

@@ -84,7 +84,7 @@ public:
     uint64_t truncate_global_compute_time = 0;
     uint64_t truncate_global_comm_time = 0;
 
-    uint64_t truncate_matmul_transfer_time = 0; // the same method as above
+    uint64_t truncate_matmul_transfer_time = 0; // the same method as above // this is only for MHA
     uint64_t truncate_matmul_compute_time = 0;
     uint64_t truncate_matmul_comm_time = 0;
 

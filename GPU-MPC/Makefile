@@ -9,7 +9,8 @@ LLAMA_PATH=$(SYTORCH_PATH)/ext/llama
 CUDA_ARCH =$(GPU_ARCH)
 
 CXX=/usr/local/cuda-$(CUDA_VERSION)/bin/nvcc
-FLAGS := -O3 -gencode arch=compute_$(CUDA_ARCH),code=[sm_$(CUDA_ARCH),compute_$(CUDA_ARCH)] -std=c++17 -m64 -Xcompiler="-O3,-w,-std=c++17,-fpermissive,-fpic,-pthread,-fopenmp,-march=native" 
+#FLAGS := -O3 -gencode arch=compute_$(CUDA_ARCH),code=[sm_$(CUDA_ARCH),compute_$(CUDA_ARCH)] -std=c++17 -m64 -Xcompiler="-O3,-w,-std=c++17,-fpermissive,-fpic,-pthread,-fopenmp,-march=native" 
+FLAGS := -O0 -g -lineinfo -gencode arch=compute_$(CUDA_ARCH),code=[sm_$(CUDA_ARCH),compute_$(CUDA_ARCH)] -std=c++17 -m64 -Xcompiler="-O0,-g,-w,-std=c++17,-fpermissive,-fpic,-pthread,-fopenmp,-march=native"
 LIBS := -lsytorch -lcryptoTools -lLLAMA -lbitpack -lcuda -lcudart -lcurand
 SECFLOAT_LIBS := -lSCI-FloatML -lSCI-FloatingPoint -lSCI-BuildingBlocks -lSCI-LinearOT -lSCI-GC -lcrypto
 

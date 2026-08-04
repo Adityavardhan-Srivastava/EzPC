@@ -118,18 +118,18 @@ GroupElement evalF2BF16_2(int party, GroupElement x, GroupElement k, GroupElemen
     return res;
 }
 
-GroupElement evalF2BF16_3(int party, GroupElement k, GroupElement xm, const F2BF16KeyPack &key) {
-    GroupElement t;
-    evalDCF(party, &t, xm % (1LL << (key.bin - 8)), key.dcfTruncate);
-    GroupElement res = party * (xm >> (key.bin - 8)) - key.rProd - t;
-    if (party == 1)
-    {
-        res -= 128; // as the top bit is always 1
+    GroupElement evalF2BF16_3(int party, GroupElement k, GroupElement xm, const F2BF16KeyPack &key) {
+        GroupElement t;
+        evalDCF(party, &t, xm % (1LL << (key.bin - 8)), key.dcfTruncate);
+        GroupElement res = party * (xm >> (key.bin - 8)) - key.rProd - t;
+        if (party == 1)
+        {
+            res -= 128; // as the top bit is always 1
+        }
+
+        res = res << 6;
+        if (party == 1)
+            res = res + k;
+
+        return res + key.rout;
     }
-
-    res = res << 6;
-    if (party == 1)
-        res = res + k;
-
-    return res + key.rout;
-}
